@@ -7,12 +7,19 @@
 
 import { GAME } from './config.js';
 
-const SKILLCHECK_CHANCE_PER_SEC = 1 / 9;   // average one every ~9s of repair
+const SKILLCHECK_CHANCE_PER_SEC = 0.08;    // 8%/s, as in DBD
 const SKILLCHECK_SWEEP_SECONDS = 1.1;      // needle full revolution time
 const MISS_PENALTY = 0.10;                 // 10% progress lost
+const MISS_PAUSE_SECONDS = 3;              // repairs stall briefly after a miss
 const GREAT_BONUS = 0.01;                  // +1% progress
 const ZONE_SIZE = Math.PI * 0.32;          // success zone arc (~58 deg)
 const GREAT_SIZE = Math.PI * 0.09;         // great zone arc (~16 deg)
+
+// Co-op efficiency: each additional repairer on the same gen costs everyone
+// 15% individual speed (DBD's "too many cooks" penalty).
+export function crewRate(crew) {
+  return Math.max(0.55, 1 - 0.15 * (Math.max(1, crew) - 1));
+}
 
 export function startRepair(survivor, gen, rng) {
   survivor.action = {
@@ -20,6 +27,7 @@ export function startRepair(survivor, gen, rng) {
     gen,
     rng,
     skillCheck: null,
+    pauseTimer: 0,
   };
 }
 
@@ -42,6 +50,12 @@ export function updateRepair(survivor, inp, dt, rng) {
     return events;
   }
 
+  // Stall after a missed skill check
+  if (action.pauseTimer > 0) {
+    action.pauseTimer -= dt;
+    return events;
+  }
+
   const sc = action.skillCheck;
   if (sc) {
     sc.angle += (Math.PI * 2 / SKILLCHECK_SWEEP_SECONDS) * dt;
@@ -56,16 +70,18 @@ export function updateRepair(survivor, inp, dt, rng) {
         events.push({ type: 'skillcheck-good' });
       } else {
         explode(gen, events);
+        action.pauseTimer = MISS_PAUSE_SECONDS;
       }
       action.skillCheck = null;
     } else if (sc.angle > sc.zoneStart + ZONE_SIZE) {
       // Needle swept past the zone without a press
       explode(gen, events);
+      action.pauseTimer = MISS_PAUSE_SECONDS;
       action.skillCheck = null;
     }
   } else {
-    // Normal repair progress
-    gen.progress += dt / GAME.GEN_REPAIR_SECONDS;
+    // Normal repair progress (co-op penalty applies)
+    gen.progress += crewRate(gen.crew) * dt / GAME.GEN_REPAIR_SECONDS;
 
     // Maybe spawn a skill check
     if (rng.chance(SKILLCHECK_CHANCE_PER_SEC * dt)) {

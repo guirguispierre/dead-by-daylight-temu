@@ -111,6 +111,10 @@ export function playStinger(kind) {
     case 'vault':
       tone(260, now, 0.08, 0.12);
       break;
+    case 'endurance-hit':
+      tone(440, now, 0.2, 0.12);
+      tone(440, now + 0.1, 0.15, 0.2);
+      break;
     case 'self-unhook':
     case 'unhooked':
     case 'wiggle-free':

@@ -21,7 +21,7 @@ export const KILLER = {
 export const GAME = {
   GENERATORS_TOTAL: 7,        // on the map
   GENERATORS_REQUIRED: 5,     // to power gates
-  GEN_REPAIR_SECONDS: 80,     // solo repair time (real DBD: 90)
+  GEN_REPAIR_SECONDS: 90,     // solo repair time, matches DBD
   TICK: 1 / 60,               // fixed timestep seconds
 };
 
