@@ -2,12 +2,72 @@
 // and the skill check dial.
 
 import { skillCheckGeometry, generatorsRemaining } from './generators.js';
+import { HEALTH, HOOK_STAGE_SECONDS } from './survivor.js';
 
 export function drawHud(ctx, world, w, h) {
   drawGenCounter(ctx, world, w, h);
+  drawHealthState(ctx, world, w, h);
   drawPrompt(ctx, world, w, h);
   drawActionProgress(ctx, world, w, h);
   drawSkillCheck(ctx, world, w, h);
+  drawStatusBars(ctx, world, w, h);
+}
+
+const HEALTH_LABELS = {
+  [HEALTH.HEALTHY]: ['Healthy', '#9bc995'],
+  [HEALTH.INJURED]: ['Injured', '#d9a05b'],
+  [HEALTH.DOWNED]: ['Dying — crawl away!', '#c0392b'],
+  [HEALTH.CARRIED]: ['Carried — mash A/D to wiggle!', '#c0392b'],
+  [HEALTH.HOOKED]: ['Hooked', '#a32330'],
+  [HEALTH.DEAD]: ['Dead', '#666'],
+};
+
+function drawHealthState(ctx, world, w, h) {
+  const [label, color] = HEALTH_LABELS[world.survivor.health] ?? ['?', '#fff'];
+  ctx.save();
+  ctx.font = '600 16px system-ui, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = color;
+  ctx.fillText(label, 24, h - 70);
+  ctx.restore();
+}
+
+function bar(ctx, x, y, w, h, frac, color) {
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(x - 3, y - 3, w + 6, h + 6);
+  ctx.fillStyle = '#2a2a33';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, w * Math.max(0, Math.min(1, frac)), h);
+}
+
+function drawStatusBars(ctx, world, w, h) {
+  const s = world.survivor;
+  ctx.save();
+  ctx.font = '500 14px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+
+  if (s.health === HEALTH.CARRIED) {
+    bar(ctx, w / 2 - 120, h * 0.72, 240, 12, s.wiggle, '#d9a05b');
+    ctx.fillStyle = '#e8e3d0';
+    ctx.fillText('WIGGLE!', w / 2, h * 0.72 - 10);
+  }
+
+  if (s.health === HEALTH.HOOKED && s.hookState) {
+    const hs = s.hookState;
+    bar(ctx, w / 2 - 120, h * 0.72, 240, 12, hs.timer / HOOK_STAGE_SECONDS, '#a32330');
+    ctx.fillStyle = '#e8e3d0';
+    const label = hs.stage === 1
+      ? `Hook stage 1 — [Space] attempt escape (${hs.attemptsLeft} left, 4%)`
+      : 'Hook stage 2 — the Entity closes in...';
+    ctx.fillText(label, w / 2, h * 0.72 - 10);
+  }
+
+  if (s.action && s.action.type === 'heal') {
+    bar(ctx, w / 2 - 120, h * 0.78, 240, 10, s.healProgress || 0, '#9bc995');
+  }
+
+  ctx.restore();
 }
 
 function drawGenCounter(ctx, world, w, h) {

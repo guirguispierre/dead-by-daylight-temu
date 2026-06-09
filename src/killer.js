@@ -1,10 +1,11 @@
-// The Killer: a relentless AI that patrols generators and chases survivors
-// it sees or hears. States: patrol -> chase -> search (lost them) -> patrol.
+// The Killer: a relentless AI that patrols generators, chases survivors,
+// and carries downed ones to hooks.
+// States: patrol -> chase -> search -> patrol, plus pickup/carry/stunned.
 
 import { KILLER, METER } from './config.js';
 import { hasLineOfSight, collideWithMap } from './map.js';
 import { findPath } from './pathfind.js';
-import { STANCE } from './survivor.js';
+import { STANCE, HEALTH, damageSurvivor, hookSurvivor } from './survivor.js';
 
 const SEE_RANGE = 24 * METER;        // LOS detection range, walking survivor
 const SEE_RANGE_CROUCH = 8 * METER;  // crouched survivors are stealthy
@@ -12,6 +13,13 @@ const HEAR_RANGE = 10 * METER;       // running survivors are heard through wall
 const LOSE_SIGHT_SECONDS = 3;        // grace before dropping chase
 const SEARCH_SECONDS = 4;            // lingering at last seen position
 const REPATH_INTERVAL = 0.35;
+
+const ATTACK_COOLDOWN = 2.7;         // seconds between swings (weapon wipe)
+const ATTACK_SLOW_SECONDS = 1.0;     // crawl while wiping the blade
+const PICKUP_SECONDS = 1.0;
+const CARRY_SPEED_MULT = 0.8;
+const WIGGLE_STUN_SECONDS = 2.5;
+const HOOK_RANGE = 2.2 * METER; // path ends at the hook's neighbor cell
 
 export function createKiller(x, y) {
   return {
@@ -27,6 +35,10 @@ export function createKiller(x, y) {
     loseSightTimer: 0,
     searchTimer: 0,
     speedMult: 1,
+    attackCooldown: 0,
+    pickupTimer: 0,
+    stunTimer: 0,
+    targetHook: null,
   };
 }
 
@@ -35,10 +47,29 @@ export function updateKiller(k, world, dt) {
   const map = world.map;
 
   k.repathTimer -= dt;
+  if (k.attackCooldown > 0) k.attackCooldown -= dt;
+
+  // Swinging slows the killer; otherwise full speed
+  k.speedMult = (k.attackCooldown > ATTACK_COOLDOWN - ATTACK_SLOW_SECONDS) ? 0.3 : 1;
+
+  // Downed survivor nearby-ish? Go pick them up.
+  if (s.health === HEALTH.DOWNED &&
+      k.state !== 'pickup' && k.state !== 'carry' && k.state !== 'stunned') {
+    k.state = 'pickup';
+    k.path = null;
+  }
+
+  // Hooked or dead survivor: nothing to chase, go patrol
+  if ((s.health === HEALTH.HOOKED || s.health === HEALTH.DEAD) &&
+      (k.state === 'chase' || k.state === 'search' || k.state === 'pickup')) {
+    k.state = 'patrol';
+    k.patrolTarget = null;
+    k.path = null;
+  }
 
   // Gen explosions attract the killer from anywhere
   for (const e of world.events) {
-    if (e.type === 'gen-explode' && k.state !== 'chase') {
+    if (e.type === 'gen-explode' && (k.state === 'patrol' || k.state === 'search')) {
       k.state = 'search';
       k.lastSeen = { x: e.gen.x, y: e.gen.y };
       k.searchTimer = SEARCH_SECONDS;
@@ -46,7 +77,8 @@ export function updateKiller(k, world, dt) {
     }
   }
 
-  const canSee = detect(k, s, map);
+  const canSee = (s.health === HEALTH.HEALTHY || s.health === HEALTH.INJURED) &&
+                 detect(k, s, map);
 
   switch (k.state) {
     case 'patrol': {
@@ -63,7 +95,7 @@ export function updateKiller(k, world, dt) {
       if (canSee) {
         k.lastSeen = { x: s.x, y: s.y };
         k.loseSightTimer = 0;
-      } else {
+      } else if (s.health === HEALTH.HEALTHY || s.health === HEALTH.INJURED) {
         k.loseSightTimer += dt;
         if (k.loseSightTimer > LOSE_SIGHT_SECONDS) {
           k.state = 'search';
@@ -73,6 +105,15 @@ export function updateKiller(k, world, dt) {
         }
       }
       moveAlongPath(k, map, k.lastSeen ?? s, dt);
+
+      // Swing when in lunge range
+      const d = Math.hypot(s.x - k.x, s.y - k.y);
+      if (d <= KILLER.LUNGE_RANGE && k.attackCooldown <= 0 &&
+          (s.health === HEALTH.HEALTHY || s.health === HEALTH.INJURED)) {
+        k.attackCooldown = ATTACK_COOLDOWN;
+        const event = damageSurvivor(s);
+        if (event) world.events.push({ type: event });
+      }
       break;
     }
 
@@ -89,6 +130,72 @@ export function updateKiller(k, world, dt) {
           k.patrolTarget = null;
           k.lastSeen = null;
         }
+      }
+      break;
+    }
+
+    case 'pickup': {
+      if (s.health !== HEALTH.DOWNED) { k.state = 'patrol'; k.path = null; break; }
+      const d = Math.hypot(s.x - k.x, s.y - k.y);
+      if (d > 1.2 * METER) {
+        k.pickupTimer = 0;
+        moveAlongPath(k, map, s, dt);
+      } else {
+        k.pickupTimer += dt;
+        if (k.pickupTimer >= PICKUP_SECONDS) {
+          s.health = HEALTH.CARRIED;
+          s.wiggle = 0;
+          s.action = null;
+          k.state = 'carry';
+          k.targetHook = nearestFreeHook(k, map);
+          k.path = null;
+          world.events.push({ type: 'picked-up' });
+        }
+      }
+      break;
+    }
+
+    case 'carry': {
+      // Survivor rides on the shoulder
+      s.x = k.x + Math.cos(k.facing + Math.PI / 2) * 6;
+      s.y = k.y + Math.sin(k.facing + Math.PI / 2) * 6;
+
+      if (s.wiggle >= 1) {
+        // Wiggled free: survivor escapes, killer is stunned
+        s.health = HEALTH.INJURED;
+        s.sprintBurst = 1.8;
+        s.wiggle = 0;
+        k.state = 'stunned';
+        k.stunTimer = WIGGLE_STUN_SECONDS;
+        world.events.push({ type: 'wiggle-free' });
+        break;
+      }
+
+      if (!k.targetHook || k.targetHook.occupied) {
+        k.targetHook = nearestFreeHook(k, map);
+      }
+      if (!k.targetHook) break; // nowhere to hook; keep lugging
+
+      k.speedMult = CARRY_SPEED_MULT;
+      moveAlongPath(k, map, k.targetHook, dt);
+      if (Math.hypot(k.targetHook.x - k.x, k.targetHook.y - k.y) <= HOOK_RANGE) {
+        const event = hookSurvivor(s, k.targetHook);
+        world.events.push({ type: event });
+        k.state = 'patrol';
+        k.patrolTarget = null;
+        k.targetHook = null;
+        k.path = null;
+      }
+      break;
+    }
+
+    case 'stunned': {
+      k.stunTimer -= dt;
+      if (k.stunTimer <= 0) {
+        k.state = 'chase';
+        k.lastSeen = { x: s.x, y: s.y };
+        k.loseSightTimer = 0;
+        k.path = null;
       }
       break;
     }
@@ -121,9 +228,19 @@ function pickPatrolGen(k, world) {
   // Prefer gens away from the current position so the killer roams
   const sorted = candidates.slice().sort((a, b) =>
     Math.hypot(a.x - k.x, a.y - k.y) - Math.hypot(b.x - k.x, b.y - k.y));
-  // Pick among the middle/far ones with a bit of randomness
   const pool = sorted.slice(Math.floor(sorted.length / 2));
   return pool[Math.floor(world.rng.next() * pool.length)] ?? sorted[0];
+}
+
+function nearestFreeHook(k, map) {
+  let best = null;
+  let bestD = Infinity;
+  for (const h of map.hooks) {
+    if (h.occupied) continue;
+    const d = Math.hypot(h.x - k.x, h.y - k.y);
+    if (d < bestD) { best = h; bestD = d; }
+  }
+  return best;
 }
 
 function arrived(k, target) {
