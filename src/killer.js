@@ -20,6 +20,8 @@ const PICKUP_SECONDS = 1.0;
 const CARRY_SPEED_MULT = 0.8;
 const WIGGLE_STUN_SECONDS = 2.5;
 const HOOK_RANGE = 2.2 * METER; // path ends at the hook's neighbor cell
+const BREAK_SECONDS = 2.6;      // pallet break channel
+const BREAK_RANGE = 1.3 * METER;
 
 export function createKiller(x, y) {
   return {
@@ -39,6 +41,8 @@ export function createKiller(x, y) {
     pickupTimer: 0,
     stunTimer: 0,
     targetHook: null,
+    breakTimer: 0,
+    breakTarget: null,
   };
 }
 
@@ -105,6 +109,16 @@ export function updateKiller(k, world, dt) {
         }
       }
       moveAlongPath(k, map, k.lastSeen ?? s, dt);
+
+      // Dropped pallet in the face? Smash it.
+      const pallet = nearbyDroppedPallet(k, map);
+      if (pallet) {
+        k.state = 'break';
+        k.breakTimer = BREAK_SECONDS;
+        k.breakTarget = pallet;
+        k.path = null;
+        break;
+      }
 
       // Swing when in lunge range
       const d = Math.hypot(s.x - k.x, s.y - k.y);
@@ -189,6 +203,20 @@ export function updateKiller(k, world, dt) {
       break;
     }
 
+    case 'break': {
+      k.breakTimer -= dt;
+      if (k.breakTimer <= 0) {
+        if (k.breakTarget) k.breakTarget.state = 'broken';
+        k.breakTarget = null;
+        world.events.push({ type: 'pallet-break' });
+        k.state = 'chase';
+        k.lastSeen = { x: s.x, y: s.y };
+        k.loseSightTimer = 0;
+        k.path = null;
+      }
+      break;
+    }
+
     case 'stunned': {
       k.stunTimer -= dt;
       if (k.stunTimer <= 0) {
@@ -230,6 +258,14 @@ function pickPatrolGen(k, world) {
     Math.hypot(a.x - k.x, a.y - k.y) - Math.hypot(b.x - k.x, b.y - k.y));
   const pool = sorted.slice(Math.floor(sorted.length / 2));
   return pool[Math.floor(world.rng.next() * pool.length)] ?? sorted[0];
+}
+
+function nearbyDroppedPallet(k, map) {
+  for (const p of map.pallets) {
+    if (p.state !== 'dropped') continue;
+    if (Math.hypot(p.x - k.x, p.y - k.y) < BREAK_RANGE + k.radius) return p;
+  }
+  return null;
 }
 
 function nearestFreeHook(k, map) {

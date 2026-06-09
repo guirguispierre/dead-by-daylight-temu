@@ -97,6 +97,20 @@ export function playStinger(kind) {
       thump(45, now, 0.45, 1.6);
       tone(140, now + 0.3, 0.2, 1.0);
       break;
+    case 'pallet-drop':
+      thump(85, now, 0.3, 0.25);
+      break;
+    case 'pallet-stun':
+      tone(300, now, 0.3, 0.1);
+      thump(110, now + 0.03, 0.35, 0.4);
+      break;
+    case 'pallet-break':
+      thump(75, now, 0.3, 0.2);
+      thump(95, now + 0.12, 0.25, 0.2);
+      break;
+    case 'vault':
+      tone(260, now, 0.08, 0.12);
+      break;
     case 'self-unhook':
     case 'wiggle-free':
     case 'healed':
