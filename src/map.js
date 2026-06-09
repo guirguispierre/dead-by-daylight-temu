@@ -218,6 +218,9 @@ export function generateMap(seed) {
   map.survivorSpawn = findOpenNear(map, 4, 4);
   map.killerSpawn = findOpenNear(map, MAP_W - 5, MAP_H - 5);
 
+  // Hatch: a random floor spot away from both spawns. Hidden until opened.
+  map.hatch = placeHatch(map, rng);
+
   return map;
 }
 
@@ -259,6 +262,22 @@ function placeGate(map, rng, side) {
     progress: 0,
     open: false,
   });
+}
+
+function placeHatch(map, rng) {
+  for (let tries = 0; tries < 200; tries++) {
+    const cx = rng.int(4, MAP_W - 5);
+    const cy = rng.int(4, MAP_H - 5);
+    if (map.at(cx, cy) !== T.FLOOR) continue;
+    const x = (cx + 0.5) * CELL;
+    const y = (cy + 0.5) * CELL;
+    const farFromSurvivor = Math.hypot(x - map.survivorSpawn.x, y - map.survivorSpawn.y) > 25 * CELL;
+    const farFromKiller = Math.hypot(x - map.killerSpawn.x, y - map.killerSpawn.y) > 15 * CELL;
+    if (farFromSurvivor && farFromKiller) return { cx, cy, x, y, open: false };
+  }
+  // Fallback: middle of the map
+  const c = findOpenNear(map, Math.floor(MAP_W / 2), Math.floor(MAP_H / 2));
+  return { cx: Math.floor(c.x / CELL), cy: Math.floor(c.y / CELL), x: c.x, y: c.y, open: false };
 }
 
 function findOpenNear(map, cx, cy) {
