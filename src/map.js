@@ -270,31 +270,50 @@ function findOpenNear(map, cx, cy) {
 
 /**
  * Resolve a circle of `radius` at proposed position (x, y) against solid
- * cells, axis-separated. `from` is the current position.
+ * cells by pushing it out of any overlapping cell AABB. Gives natural
+ * wall sliding and never wedges. (fromX/fromY kept for call-site symmetry.)
  */
 export function collideWithMap(map, fromX, fromY, x, y, radius) {
-  let nx = resolveAxis(map, x, fromY, radius) ? fromX : x;
-  let ny = resolveAxis(map, nx, y, radius) ? fromY : y;
-  return { x: nx, y: ny };
-}
-
-function resolveAxis(map, x, y, radius) {
-  const minCx = Math.floor((x - radius) / CELL);
-  const maxCx = Math.floor((x + radius) / CELL);
-  const minCy = Math.floor((y - radius) / CELL);
-  const maxCy = Math.floor((y + radius) / CELL);
-  for (let cy = minCy; cy <= maxCy; cy++) {
-    for (let cx = minCx; cx <= maxCx; cx++) {
-      if (!map.isSolid(cx, cy)) continue;
-      // Circle vs cell AABB
-      const closestX = Math.max(cx * CELL, Math.min(x, (cx + 1) * CELL));
-      const closestY = Math.max(cy * CELL, Math.min(y, (cy + 1) * CELL));
-      if ((x - closestX) ** 2 + (y - closestY) ** 2 < radius * radius) {
-        return true; // blocked
+  const r = radius + 0.01; // epsilon so the resolved position is stable
+  let px = x;
+  let py = y;
+  for (let iter = 0; iter < 4; iter++) {
+    let pushed = false;
+    const minCx = Math.floor((px - r) / CELL);
+    const maxCx = Math.floor((px + r) / CELL);
+    const minCy = Math.floor((py - r) / CELL);
+    const maxCy = Math.floor((py + r) / CELL);
+    for (let cy = minCy; cy <= maxCy; cy++) {
+      for (let cx = minCx; cx <= maxCx; cx++) {
+        if (!map.isSolid(cx, cy)) continue;
+        const x0 = cx * CELL;
+        const y0 = cy * CELL;
+        const closestX = Math.max(x0, Math.min(px, x0 + CELL));
+        const closestY = Math.max(y0, Math.min(py, y0 + CELL));
+        const dx = px - closestX;
+        const dy = py - closestY;
+        const d2 = dx * dx + dy * dy;
+        if (d2 >= r * r) continue;
+        if (d2 === 0) {
+          // Center inside the box: push out along the axis of least penetration
+          const bx = x0 + CELL / 2;
+          const by = y0 + CELL / 2;
+          if (Math.abs(px - bx) > Math.abs(py - by)) {
+            px = px > bx ? x0 + CELL + r : x0 - r;
+          } else {
+            py = py > by ? y0 + CELL + r : y0 - r;
+          }
+        } else {
+          const d = Math.sqrt(d2);
+          px = closestX + (dx / d) * r;
+          py = closestY + (dy / d) * r;
+        }
+        pushed = true;
       }
     }
+    if (!pushed) break;
   }
-  return false;
+  return { x: px, y: py };
 }
 
 /** Line of sight between two world points, sampled against solid cells. */

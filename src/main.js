@@ -7,6 +7,8 @@ import { createRng } from './rng.js';
 import { startRepair, updateRepair, cancelAction } from './generators.js';
 import { findInteraction } from './interact.js';
 import { drawHud } from './hud.js';
+import { createKiller, updateKiller, terrorIntensity } from './killer.js';
+import { updateHeartbeat, playStinger } from './audio.js';
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
@@ -23,11 +25,13 @@ const seed = (Math.random() * 2 ** 32) >>> 0;
 const map = generateMap(seed);
 const rng = createRng(seed ^ 0x9e3779b9); // separate stream for gameplay rolls
 const survivor = createSurvivor(map.survivorSpawn.x, map.survivorSpawn.y);
+const killer = createKiller(map.killerSpawn.x, map.killerSpawn.y);
 
 const world = {
   map,
   rng,
   survivor,
+  killer,
   camera: { x: survivor.x, y: survivor.y },
   prompt: null,
   events: [],   // transient per-tick events (gen explosions, etc.)
@@ -76,6 +80,12 @@ function tick(dt) {
     }
   }
 
+  updateKiller(world.killer, world, dt);
+
+  // Terror radius heartbeat + event stingers
+  updateHeartbeat(terrorIntensity(world.killer, s), dt);
+  for (const e of world.events) playStinger(e.type);
+
   // Camera follows survivor with slight smoothing
   const cam = world.camera;
   cam.x += (s.x - cam.x) * 0.12;
@@ -97,11 +107,44 @@ function render() {
   ctx.translate(Math.round(w / 2 - cam.x), Math.round(h / 2 - cam.y));
 
   drawMap(ctx, world.map, cam.x - w / 2, cam.y - h / 2, w, h);
+  drawKiller(world.killer);
   drawSurvivor(world.survivor);
 
   ctx.restore();
 
+  drawTerrorVignette(w, h);
   drawHud(ctx, world, w, h);
+}
+
+function drawKiller(k) {
+  ctx.fillStyle = COLORS.KILLER;
+  ctx.beginPath();
+  ctx.arc(k.x, k.y, k.radius, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Glowing eyes in the facing direction
+  const ex = Math.cos(k.facing);
+  const ey = Math.sin(k.facing);
+  const px = -ey, py = ex; // perpendicular
+  ctx.fillStyle = '#ffd9a0';
+  for (const side of [-1, 1]) {
+    ctx.beginPath();
+    ctx.arc(
+      k.x + ex * k.radius * 0.55 + px * side * 3,
+      k.y + ey * k.radius * 0.55 + py * side * 3,
+      1.6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawTerrorVignette(w, h) {
+  const intensity = terrorIntensity(world.killer, world.survivor);
+  if (intensity <= 0) return;
+  const grad = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.35, w / 2, h / 2, Math.max(w, h) * 0.7);
+  grad.addColorStop(0, 'rgba(120, 10, 20, 0)');
+  grad.addColorStop(1, `rgba(120, 10, 20, ${0.35 * intensity})`);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, w, h);
 }
 
 function drawSurvivor(s) {
