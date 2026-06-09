@@ -3,6 +3,10 @@ import { input } from './input.js';
 import { createSurvivor, updateSurvivor, STANCE } from './survivor.js';
 import { generateMap, collideWithMap } from './map.js';
 import { drawMap } from './render.js';
+import { createRng } from './rng.js';
+import { startRepair, updateRepair, cancelAction } from './generators.js';
+import { findInteraction } from './interact.js';
+import { drawHud } from './hud.js';
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
@@ -15,13 +19,18 @@ window.addEventListener('resize', resize);
 resize();
 
 // --- World state ---
-const map = generateMap((Math.random() * 2 ** 32) >>> 0);
+const seed = (Math.random() * 2 ** 32) >>> 0;
+const map = generateMap(seed);
+const rng = createRng(seed ^ 0x9e3779b9); // separate stream for gameplay rolls
 const survivor = createSurvivor(map.survivorSpawn.x, map.survivorSpawn.y);
 
 const world = {
   map,
+  rng,
   survivor,
   camera: { x: survivor.x, y: survivor.y },
+  prompt: null,
+  events: [],   // transient per-tick events (gen explosions, etc.)
   collide: (x, y, radius) => collideWithMap(map, survivor.x, survivor.y, x, y, radius),
 };
 
@@ -43,12 +52,34 @@ function frame(now) {
 }
 
 function tick(dt) {
-  updateSurvivor(world.survivor, input, dt, world.collide);
+  const s = world.survivor;
+  world.events.length = 0;
+
+  if (s.action) {
+    // Any movement input breaks the interaction
+    if (input.moveX !== 0 || input.moveY !== 0) {
+      cancelAction(s);
+    } else if (s.action.type === 'repair') {
+      world.events.push(...updateRepair(s, input, dt, world.rng));
+    }
+    world.prompt = null;
+  } else {
+    updateSurvivor(s, input, dt, world.collide);
+
+    const interaction = findInteraction(world);
+    world.prompt = interaction ? interaction.label : null;
+    if (interaction && input.interactPressed) {
+      if (interaction.type === 'repair') {
+        startRepair(s, interaction.target, world.rng);
+        world.prompt = null;
+      }
+    }
+  }
 
   // Camera follows survivor with slight smoothing
   const cam = world.camera;
-  cam.x += (world.survivor.x - cam.x) * 0.12;
-  cam.y += (world.survivor.y - cam.y) * 0.12;
+  cam.x += (s.x - cam.x) * 0.12;
+  cam.y += (s.y - cam.y) * 0.12;
 
   input.endFrame();
 }
@@ -69,6 +100,8 @@ function render() {
   drawSurvivor(world.survivor);
 
   ctx.restore();
+
+  drawHud(ctx, world, w, h);
 }
 
 function drawSurvivor(s) {
