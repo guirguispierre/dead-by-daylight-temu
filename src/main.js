@@ -1,8 +1,10 @@
 import { GAME, COLORS } from './config.js';
 import { input } from './input.js';
 import {
-  createSurvivor, updateSurvivor, updateHooked, updateHeal, STANCE, HEALTH,
+  createSurvivor, updateSurvivor, updateHooked, updateHeal, unhookSurvivor,
+  STANCE, HEALTH,
 } from './survivor.js';
+import { createBot, updateBot } from './bot.js';
 import { generateMap, collideWithMap, vaultLanding } from './map.js';
 import { drawMap } from './render.js';
 import { createRng } from './rng.js';
@@ -29,11 +31,23 @@ const rng = createRng(seed ^ 0x9e3779b9); // separate stream for gameplay rolls
 const survivor = createSurvivor(map.survivorSpawn.x, map.survivorSpawn.y);
 const killer = createKiller(map.killerSpawn.x, map.killerSpawn.y);
 
+// Three AI teammates spawn near the player (push-out resolves overlaps)
+const bots = [0, 1, 2].map(i => {
+  const raw = createBot(map.survivorSpawn.x + (i + 1) * 22, map.survivorSpawn.y + (i % 2 ? 22 : -22), i);
+  const safe = collideWithMap(map, raw.x, raw.y, raw.x, raw.y, raw.radius);
+  raw.x = safe.x;
+  raw.y = safe.y;
+  return raw;
+});
+
 const world = {
   map,
   rng,
   survivor,
+  bots,
+  survivors: [survivor, ...bots],
   killer,
+  started: false,
   camera: { x: survivor.x, y: survivor.y },
   prompt: null,
   events: [],   // transient per-tick events (gen explosions, etc.)
@@ -45,7 +59,8 @@ const world = {
 
 const GATE_OPEN_SECONDS = 15;
 const COLLAPSE_SECONDS = 120;
-const HATCH_GENS = 3;       // hatch opens at this many gens done (solo rule)
+const UNHOOK_SECONDS = 1.5;
+const HEAL_OTHER_SECONDS = 8;
 
 // --- Fixed-timestep loop ---
 let last = performance.now();
@@ -81,10 +96,21 @@ function dropPallet(pallet) {
   }
 }
 
+const NO_INPUT = { interactPressed: false };
+const GLOBAL_STINGERS = new Set([
+  'gen-done', 'gen-explode', 'gates-powered', 'gate-open', 'hatch-open', 'pallet-break',
+]);
+
 function tick(dt) {
   const s = world.survivor;
   world.events.length = 0;
   world.prompt = null;
+
+  if (!world.started) {
+    if (input.wasPressed('Enter') || input.interactPressed) world.started = true;
+    input.endFrame();
+    return;
+  }
 
   if (world.escaped) {
     if (input.wasPressed('KeyR')) location.reload();
@@ -97,7 +123,8 @@ function tick(dt) {
     world.gatesPowered = true;
     world.events.push({ type: 'gates-powered' });
   }
-  if (!world.map.hatch.open && generatorsDone(world.map) >= HATCH_GENS) {
+  // Hatch opens when the player is the last survivor standing (real rule)
+  if (!world.map.hatch.open && world.bots.every(b => b.health === HEALTH.DEAD)) {
     world.map.hatch.open = true;
     world.events.push({ type: 'hatch-open' });
   }
@@ -154,6 +181,28 @@ function tick(dt) {
         } else if (s.action.type === 'heal') {
           const ev = updateHeal(s, dt);
           if (ev) world.events.push({ type: ev });
+        } else if (s.action.type === 'unhook') {
+          const t = s.action.target;
+          if (t.health !== HEALTH.HOOKED) { s.action = null; }
+          else {
+            s.action.timer -= dt;
+            if (s.action.timer <= 0) {
+              unhookSurvivor(t);
+              world.events.push({ type: 'unhooked', who: t });
+              s.action = null;
+            }
+          }
+        } else if (s.action.type === 'heal-other') {
+          const t = s.action.target;
+          if (t.health !== HEALTH.INJURED && t.health !== HEALTH.DOWNED) { s.action = null; }
+          else {
+            s.action.timer -= dt;
+            if (s.action.timer <= 0) {
+              t.health = t.health === HEALTH.DOWNED ? HEALTH.INJURED : HEALTH.HEALTHY;
+              world.events.push({ type: 'healed', who: t });
+              s.action = null;
+            }
+          }
         } else if (s.action.type === 'open-gate') {
           const gate = s.action.gate;
           gate.progress += dt / GATE_OPEN_SECONDS;
@@ -186,6 +235,10 @@ function tick(dt) {
             s.action = { type: 'heal' };
           } else if (interaction.type === 'open-gate') {
             s.action = { type: 'open-gate', gate: interaction.target };
+          } else if (interaction.type === 'unhook') {
+            s.action = { type: 'unhook', target: interaction.target, timer: UNHOOK_SECONDS };
+          } else if (interaction.type === 'heal-other') {
+            s.action = { type: 'heal-other', target: interaction.target, timer: HEAL_OTHER_SECONDS };
           } else if (interaction.type === 'drop-pallet') {
             dropPallet(interaction.target);
           } else if (interaction.type === 'vault') {
@@ -203,11 +256,23 @@ function tick(dt) {
 
   checkEscape(s);
 
+  // Teammates
+  for (const b of world.bots) {
+    if (b.health === HEALTH.HOOKED) {
+      const ev = updateHooked(b, NO_INPUT, dt, world.rng);
+      if (ev) world.events.push({ type: ev, who: b });
+    } else {
+      updateBot(b, world, dt);
+    }
+  }
+
   updateKiller(world.killer, world, dt);
 
-  // Terror radius heartbeat + event stingers
+  // Terror radius heartbeat + event stingers (skip bot-personal events)
   updateHeartbeat(terrorIntensity(world.killer, s), dt);
-  for (const e of world.events) playStinger(e.type);
+  for (const e of world.events) {
+    if (!e.who || e.who === s || GLOBAL_STINGERS.has(e.type)) playStinger(e.type);
+  }
 
   // Camera follows survivor with slight smoothing
   const cam = world.camera;
@@ -257,14 +322,46 @@ function render() {
 
   drawMap(ctx, world.map, cam.x - w / 2, cam.y - h / 2, w, h);
   drawKiller(world.killer);
-  drawSurvivor(world.survivor);
+  for (const b of world.bots) {
+    drawSurvivor(b, b.color);
+    if (b.health !== HEALTH.DEAD) {
+      ctx.font = '600 9px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = 'rgba(232, 227, 208, 0.8)';
+      ctx.fillText(b.name, b.x, b.y - 12);
+    }
+  }
+  drawSurvivor(world.survivor, COLORS.SURVIVOR);
 
   ctx.restore();
 
   drawTerrorVignette(w, h);
   drawHud(ctx, world, w, h);
-  if (world.escaped) drawEscapeOverlay(w, h);
+  if (!world.started) drawMenuOverlay(w, h);
+  else if (world.escaped) drawEscapeOverlay(w, h);
   else if (world.survivor.health === HEALTH.DEAD) drawDeathOverlay(w, h);
+}
+
+function drawMenuOverlay(w, h) {
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.82)';
+  ctx.fillRect(0, 0, w, h);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#a32330';
+  ctx.font = '800 54px system-ui, sans-serif';
+  ctx.fillText('DEAD BY DAYLIGHT', w / 2, h / 2 - 70);
+  ctx.fillStyle = '#caa84e';
+  ctx.font = '700 30px system-ui, sans-serif';
+  ctx.fillText('✦ TEMU EDITION ✦', w / 2, h / 2 - 28);
+  ctx.fillStyle = '#e8e3d0';
+  ctx.font = '400 17px system-ui, sans-serif';
+  const lines = [
+    'Repair 5 generators with your team, then escape through an exit gate.',
+    'WASD move · Shift run · Ctrl sneak · Space interact / skill checks',
+    'The Killer hears you run. Drop pallets on its head. Good luck.',
+    '',
+    'Press Enter to enter the fog',
+  ];
+  lines.forEach((line, i) => ctx.fillText(line, w / 2, h / 2 + 14 + i * 26));
 }
 
 function drawEscapeOverlay(w, h) {
@@ -324,7 +421,7 @@ function drawTerrorVignette(w, h) {
   ctx.fillRect(0, 0, w, h);
 }
 
-function drawSurvivor(s) {
+function drawSurvivor(s, baseColor) {
   if (s.health === HEALTH.DEAD) return;
 
   const r = s.stance === STANCE.CROUCH ? s.radius * 0.75 : s.radius;
@@ -335,14 +432,14 @@ function drawSurvivor(s) {
     ctx.beginPath();
     ctx.ellipse(s.x, s.y, r * 1.8, r * 1.2, 0, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = COLORS.SURVIVOR;
+    ctx.fillStyle = baseColor;
     ctx.beginPath();
     ctx.ellipse(s.x, s.y, r * 1.3, r * 0.7, s.facing, 0, Math.PI * 2);
     ctx.fill();
     return;
   }
 
-  ctx.fillStyle = s.health === HEALTH.INJURED ? '#c08458' : COLORS.SURVIVOR;
+  ctx.fillStyle = s.health === HEALTH.INJURED ? '#c08458' : baseColor;
   ctx.beginPath();
   ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
   ctx.fill();

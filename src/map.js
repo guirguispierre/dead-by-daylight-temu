@@ -114,7 +114,7 @@ export const MAP_W = ZONES_X * ZONE + 2;  // +2 for border walls
 export const MAP_H = ZONES_Y * ZONE + 2;
 
 const HOOK_BUDGET = 8;
-const PALLET_BUDGET = 9;
+const PALLET_BUDGET = 12;
 
 export function generateMap(seed) {
   const rng = createRng(seed);

@@ -1,15 +1,15 @@
-// The Killer: a relentless AI that patrols generators, chases survivors,
-// and carries downed ones to hooks.
-// States: patrol -> chase -> search -> patrol, plus pickup/carry/stunned.
+// The Killer: a relentless AI that patrols generators, chases the nearest
+// detectable survivor (player or bot), and carries downed ones to hooks.
+// States: patrol -> chase -> search -> patrol, plus pickup/carry/break/stunned.
 
 import { KILLER, METER } from './config.js';
 import { hasLineOfSight, collideWithMap } from './map.js';
 import { findPath } from './pathfind.js';
 import { STANCE, HEALTH, damageSurvivor, hookSurvivor } from './survivor.js';
 
-const SEE_RANGE = 24 * METER;        // LOS detection range, walking survivor
+const SEE_RANGE = 20 * METER;        // LOS detection range, walking survivor
 const SEE_RANGE_CROUCH = 8 * METER;  // crouched survivors are stealthy
-const HEAR_RANGE = 10 * METER;       // running survivors are heard through walls
+const HEAR_RANGE = 8 * METER;        // running survivors are heard through walls
 const LOSE_SIGHT_SECONDS = 3;        // grace before dropping chase
 const SEARCH_SECONDS = 4;            // lingering at last seen position
 const REPATH_INTERVAL = 0.35;
@@ -32,8 +32,9 @@ export function createKiller(x, y) {
     path: null,
     pathIndex: 0,
     repathTimer: 0,
-    patrolTarget: null,      // generator being checked
-    lastSeen: null,          // {x, y} of survivor when sight was lost
+    patrolTarget: null,      // generator/gate being checked
+    target: null,            // survivor being chased / picked up / carried
+    lastSeen: null,          // {x, y} of target when sight was lost
     loseSightTimer: 0,
     searchTimer: 0,
     speedMult: 1,
@@ -46,9 +47,11 @@ export function createKiller(x, y) {
   };
 }
 
+const chaseable = (s) => s.health === HEALTH.HEALTHY || s.health === HEALTH.INJURED;
+
 export function updateKiller(k, world, dt) {
-  const s = world.survivor;
   const map = world.map;
+  const survivors = world.survivors;
 
   k.repathTimer -= dt;
   if (k.attackCooldown > 0) k.attackCooldown -= dt;
@@ -56,17 +59,21 @@ export function updateKiller(k, world, dt) {
   // Swinging slows the killer; otherwise full speed
   k.speedMult = (k.attackCooldown > ATTACK_COOLDOWN - ATTACK_SLOW_SECONDS) ? 0.3 : 1;
 
-  // Downed survivor nearby-ish? Go pick them up.
-  if (s.health === HEALTH.DOWNED &&
-      k.state !== 'pickup' && k.state !== 'carry' && k.state !== 'stunned') {
-    k.state = 'pickup';
-    k.path = null;
+  // A downed survivor takes priority: go pick them up
+  if (k.state !== 'pickup' && k.state !== 'carry' && k.state !== 'stunned') {
+    const downed = nearest(k, survivors.filter(s => s.health === HEALTH.DOWNED));
+    if (downed) {
+      k.state = 'pickup';
+      k.target = downed;
+      k.path = null;
+    }
   }
 
-  // Hooked or dead survivor: nothing to chase, go patrol
-  if ((s.health === HEALTH.HOOKED || s.health === HEALTH.DEAD) &&
-      (k.state === 'chase' || k.state === 'search' || k.state === 'pickup')) {
+  // Current chase target gone (hooked/dead/escaped)? Reset to patrol.
+  if ((k.state === 'chase' || k.state === 'search') &&
+      k.target && !chaseable(k.target)) {
     k.state = 'patrol';
+    k.target = null;
     k.patrolTarget = null;
     k.path = null;
   }
@@ -81,14 +88,14 @@ export function updateKiller(k, world, dt) {
     }
   }
 
-  const canSee = (s.health === HEALTH.HEALTHY || s.health === HEALTH.INJURED) &&
-                 detect(k, s, map);
+  // Spot the nearest detectable survivor
+  const spotted = nearest(k, survivors.filter(s => chaseable(s) && detect(k, s, map)));
 
   switch (k.state) {
     case 'patrol': {
-      if (canSee) { enterChase(k, world); break; }
+      if (spotted) { enterChase(k, world, spotted); break; }
       if (!k.patrolTarget || k.patrolTarget.done || arrived(k, k.patrolTarget)) {
-        k.patrolTarget = pickPatrolGen(k, world);
+        k.patrolTarget = pickPatrolTarget(k, world);
         k.path = null;
       }
       if (k.patrolTarget) moveAlongPath(k, map, k.patrolTarget, dt);
@@ -96,10 +103,14 @@ export function updateKiller(k, world, dt) {
     }
 
     case 'chase': {
+      const t = k.target;
+      const canSee = t && chaseable(t) && detect(k, t, map);
       if (canSee) {
-        k.lastSeen = { x: s.x, y: s.y };
+        k.lastSeen = { x: t.x, y: t.y };
         k.loseSightTimer = 0;
-      } else if (s.health === HEALTH.HEALTHY || s.health === HEALTH.INJURED) {
+      } else {
+        // Maybe someone else ran into view
+        if (spotted && spotted !== t) { enterChase(k, world, spotted); break; }
         k.loseSightTimer += dt;
         if (k.loseSightTimer > LOSE_SIGHT_SECONDS) {
           k.state = 'search';
@@ -108,7 +119,7 @@ export function updateKiller(k, world, dt) {
           break;
         }
       }
-      moveAlongPath(k, map, k.lastSeen ?? s, dt);
+      moveAlongPath(k, map, k.lastSeen ?? t, dt);
 
       // Dropped pallet in the face? Smash it.
       const pallet = nearbyDroppedPallet(k, map);
@@ -121,18 +132,19 @@ export function updateKiller(k, world, dt) {
       }
 
       // Swing when in lunge range
-      const d = Math.hypot(s.x - k.x, s.y - k.y);
-      if (d <= KILLER.LUNGE_RANGE && k.attackCooldown <= 0 &&
-          (s.health === HEALTH.HEALTHY || s.health === HEALTH.INJURED)) {
-        k.attackCooldown = ATTACK_COOLDOWN;
-        const event = damageSurvivor(s);
-        if (event) world.events.push({ type: event });
+      if (t && chaseable(t)) {
+        const d = Math.hypot(t.x - k.x, t.y - k.y);
+        if (d <= KILLER.LUNGE_RANGE && k.attackCooldown <= 0) {
+          k.attackCooldown = ATTACK_COOLDOWN;
+          const event = damageSurvivor(t);
+          if (event) world.events.push({ type: event, who: t });
+        }
       }
       break;
     }
 
     case 'search': {
-      if (canSee) { enterChase(k, world); break; }
+      if (spotted) { enterChase(k, world, spotted); break; }
       if (k.lastSeen && !arrived(k, k.lastSeen)) {
         moveAlongPath(k, map, k.lastSeen, dt);
       } else {
@@ -149,39 +161,42 @@ export function updateKiller(k, world, dt) {
     }
 
     case 'pickup': {
-      if (s.health !== HEALTH.DOWNED) { k.state = 'patrol'; k.path = null; break; }
-      const d = Math.hypot(s.x - k.x, s.y - k.y);
+      const t = k.target;
+      if (!t || t.health !== HEALTH.DOWNED) { k.state = 'patrol'; k.path = null; break; }
+      const d = Math.hypot(t.x - k.x, t.y - k.y);
       if (d > 1.2 * METER) {
         k.pickupTimer = 0;
-        moveAlongPath(k, map, s, dt);
+        moveAlongPath(k, map, t, dt);
       } else {
         k.pickupTimer += dt;
         if (k.pickupTimer >= PICKUP_SECONDS) {
-          s.health = HEALTH.CARRIED;
-          s.wiggle = 0;
-          s.action = null;
+          t.health = HEALTH.CARRIED;
+          t.wiggle = 0;
+          t.action = null;
           k.state = 'carry';
           k.targetHook = nearestFreeHook(k, map);
           k.path = null;
-          world.events.push({ type: 'picked-up' });
+          world.events.push({ type: 'picked-up', who: t });
         }
       }
       break;
     }
 
     case 'carry': {
+      const t = k.target;
+      if (!t || t.health !== HEALTH.CARRIED) { k.state = 'patrol'; k.path = null; break; }
       // Survivor rides on the shoulder
-      s.x = k.x + Math.cos(k.facing + Math.PI / 2) * 6;
-      s.y = k.y + Math.sin(k.facing + Math.PI / 2) * 6;
+      t.x = k.x + Math.cos(k.facing + Math.PI / 2) * 6;
+      t.y = k.y + Math.sin(k.facing + Math.PI / 2) * 6;
 
-      if (s.wiggle >= 1) {
+      if (t.wiggle >= 1) {
         // Wiggled free: survivor escapes, killer is stunned
-        s.health = HEALTH.INJURED;
-        s.sprintBurst = 1.8;
-        s.wiggle = 0;
+        t.health = HEALTH.INJURED;
+        t.sprintBurst = 1.8;
+        t.wiggle = 0;
         k.state = 'stunned';
         k.stunTimer = WIGGLE_STUN_SECONDS;
-        world.events.push({ type: 'wiggle-free' });
+        world.events.push({ type: 'wiggle-free', who: t });
         break;
       }
 
@@ -193,11 +208,12 @@ export function updateKiller(k, world, dt) {
       k.speedMult = CARRY_SPEED_MULT;
       moveAlongPath(k, map, k.targetHook, dt);
       if (Math.hypot(k.targetHook.x - k.x, k.targetHook.y - k.y) <= HOOK_RANGE) {
-        const event = hookSurvivor(s, k.targetHook);
-        world.events.push({ type: event });
+        const event = hookSurvivor(t, k.targetHook);
+        world.events.push({ type: event, who: t });
         k.state = 'patrol';
         k.patrolTarget = null;
         k.targetHook = null;
+        k.target = null;
         k.path = null;
       }
       break;
@@ -209,9 +225,11 @@ export function updateKiller(k, world, dt) {
         if (k.breakTarget) k.breakTarget.state = 'broken';
         k.breakTarget = null;
         world.events.push({ type: 'pallet-break' });
-        k.state = 'chase';
-        k.lastSeen = { x: s.x, y: s.y };
-        k.loseSightTimer = 0;
+        k.state = k.target && chaseable(k.target) ? 'chase' : 'patrol';
+        if (k.target) {
+          k.lastSeen = { x: k.target.x, y: k.target.y };
+          k.loseSightTimer = 0;
+        }
         k.path = null;
       }
       break;
@@ -220,9 +238,14 @@ export function updateKiller(k, world, dt) {
     case 'stunned': {
       k.stunTimer -= dt;
       if (k.stunTimer <= 0) {
-        k.state = 'chase';
-        k.lastSeen = { x: s.x, y: s.y };
-        k.loseSightTimer = 0;
+        if (k.target && chaseable(k.target)) {
+          k.state = 'chase';
+          k.lastSeen = { x: k.target.x, y: k.target.y };
+          k.loseSightTimer = 0;
+        } else {
+          k.state = 'patrol';
+          k.patrolTarget = null;
+        }
         k.path = null;
       }
       break;
@@ -230,13 +253,23 @@ export function updateKiller(k, world, dt) {
   }
 }
 
-function enterChase(k, world) {
-  const s = world.survivor;
+function enterChase(k, world, target) {
   k.state = 'chase';
-  k.lastSeen = { x: s.x, y: s.y };
+  k.target = target;
+  k.lastSeen = { x: target.x, y: target.y };
   k.loseSightTimer = 0;
   k.path = null;
-  world.events.push({ type: 'chase-start' });
+  world.events.push({ type: 'chase-start', who: target });
+}
+
+function nearest(k, list) {
+  let best = null;
+  let bestD = Infinity;
+  for (const s of list) {
+    const d = Math.hypot(s.x - k.x, s.y - k.y);
+    if (d < bestD) { best = s; bestD = d; }
+  }
+  return best;
 }
 
 function detect(k, s, map) {
@@ -250,7 +283,7 @@ function detect(k, s, map) {
   return hasLineOfSight(map, k.x, k.y, s.x, s.y);
 }
 
-function pickPatrolGen(k, world) {
+function pickPatrolTarget(k, world) {
   // Endgame: guard the exits instead of dead generators
   let candidates;
   if (world.gatesPowered) {
@@ -260,7 +293,7 @@ function pickPatrolGen(k, world) {
     candidates = world.map.generators.filter(g => !g.done);
   }
   if (candidates.length === 0) return null;
-  // Prefer gens away from the current position so the killer roams
+  // Prefer targets away from the current position so the killer roams
   const sorted = candidates.slice().sort((a, b) =>
     Math.hypot(a.x - k.x, a.y - k.y) - Math.hypot(b.x - k.x, b.y - k.y));
   const pool = sorted.slice(Math.floor(sorted.length / 2));
