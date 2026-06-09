@@ -41,6 +41,27 @@ export function updateRegression(map, dt, regressPerSec) {
   }
 }
 
+// --- Reusable skill check machinery (repair, healing, struggle) ---
+
+export function spawnSkillCheck(rng) {
+  return { angle: 0, zoneStart: Math.PI * 0.5 + rng.next() * Math.PI * 1.1 };
+}
+
+/**
+ * Advance a skill check needle one tick. Returns 'great' | 'good' | 'miss'
+ * when resolved, or null while still sweeping.
+ */
+export function advanceSkillCheck(sc, inp, dt) {
+  sc.angle += (Math.PI * 2 / SKILLCHECK_SWEEP_SECONDS) * dt;
+  if (inp.interactPressed) {
+    if (sc.angle >= sc.zoneStart && sc.angle <= sc.zoneStart + GREAT_SIZE) return 'great';
+    if (sc.angle >= sc.zoneStart && sc.angle <= sc.zoneStart + ZONE_SIZE) return 'good';
+    return 'miss';
+  }
+  if (sc.angle > sc.zoneStart + ZONE_SIZE) return 'miss';
+  return null;
+}
+
 export function startRepair(survivor, gen, rng) {
   survivor.action = {
     type: 'repair',
@@ -78,23 +99,15 @@ export function updateRepair(survivor, inp, dt, rng) {
 
   const sc = action.skillCheck;
   if (sc) {
-    sc.angle += (Math.PI * 2 / SKILLCHECK_SWEEP_SECONDS) * dt;
-
-    if (inp.interactPressed) {
-      const inZone = sc.angle >= sc.zoneStart && sc.angle <= sc.zoneStart + ZONE_SIZE;
-      const inGreat = sc.angle >= sc.zoneStart && sc.angle <= sc.zoneStart + GREAT_SIZE;
-      if (inGreat) {
-        gen.progress = Math.min(1, gen.progress + GREAT_BONUS);
-        events.push({ type: 'skillcheck-great' });
-      } else if (inZone) {
-        events.push({ type: 'skillcheck-good' });
-      } else {
-        explode(gen, events);
-        action.pauseTimer = MISS_PAUSE_SECONDS;
-      }
+    const result = advanceSkillCheck(sc, inp, dt);
+    if (result === 'great') {
+      gen.progress = Math.min(1, gen.progress + GREAT_BONUS);
+      events.push({ type: 'skillcheck-great' });
       action.skillCheck = null;
-    } else if (sc.angle > sc.zoneStart + ZONE_SIZE) {
-      // Needle swept past the zone without a press
+    } else if (result === 'good') {
+      events.push({ type: 'skillcheck-good' });
+      action.skillCheck = null;
+    } else if (result === 'miss') {
       explode(gen, events);
       action.pauseTimer = MISS_PAUSE_SECONDS;
       action.skillCheck = null;
@@ -107,8 +120,7 @@ export function updateRepair(survivor, inp, dt, rng) {
 
     // Maybe spawn a skill check
     if (rng.chance(SKILLCHECK_CHANCE_PER_SEC * dt)) {
-      const zoneStart = Math.PI * 0.5 + rng.next() * Math.PI * 1.1;
-      action.skillCheck = { angle: 0, zoneStart };
+      action.skillCheck = spawnSkillCheck(rng);
       events.push({ type: 'skillcheck-warn' });
     }
   }

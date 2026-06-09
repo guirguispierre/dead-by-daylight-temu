@@ -12,6 +12,8 @@ const SEE_RANGE_CROUCH = 8 * METER;  // crouched survivors are stealthy
 const HEAR_RANGE = 8 * METER;        // running survivors are heard through walls
 const LOSE_SIGHT_SECONDS = 3;        // grace before dropping chase
 const SEARCH_SECONDS = 4;            // lingering at last seen position
+const GRUNT_RANGE = 5 * METER;       // injured survivors are heard up close
+const SCRATCH_TRACK_RANGE = 14 * METER; // follow fresh scratch marks while searching
 const REPATH_INTERVAL = 0.35;
 
 const HIT_COOLDOWN = 2.7;            // weapon wipe after a landed hit
@@ -110,11 +112,12 @@ export function updateKiller(k, world, dt) {
     k.path = null;
   }
 
-  // Gen explosions attract the killer from anywhere
+  // Loud noises (gen explosions, botched heals) attract the killer
   for (const e of world.events) {
-    if (e.type === 'gen-explode' && (k.state === 'patrol' || k.state === 'search')) {
+    const isNoise = e.type === 'gen-explode' || e.type === 'heal-fail';
+    if (isNoise && (k.state === 'patrol' || k.state === 'search')) {
       k.state = 'search';
-      k.lastSeen = { x: e.gen.x, y: e.gen.y };
+      k.lastSeen = { x: e.gen ? e.gen.x : e.x, y: e.gen ? e.gen.y : e.y };
       k.searchTimer = SEARCH_SECONDS;
       k.path = null;
     }
@@ -222,6 +225,14 @@ export function updateKiller(k, world, dt) {
       if (k.lastSeen && !arrived(k, k.lastSeen)) {
         moveAlongPath(k, map, k.lastSeen, dt);
       } else {
+        // Arrived empty-handed: follow fresh scratch marks if any lead away
+        const scratch = freshestScratch(k, world);
+        if (scratch) {
+          k.lastSeen = { x: scratch.x, y: scratch.y };
+          k.searchTimer = SEARCH_SECONDS;
+          k.path = null;
+          break;
+        }
         k.searchTimer -= dt;
         // Spin around looking
         k.facing += dt * 2.2;
@@ -353,6 +364,9 @@ function detect(k, s, map) {
   // Hearing: running makes noise through walls
   if (s.stance === STANCE.RUN && s.moving && d < HEAR_RANGE) return true;
 
+  // Injured survivors grunt in pain — audible up close even through walls
+  if (s.health === HEALTH.INJURED && d < GRUNT_RANGE) return true;
+
   const range = s.stance === STANCE.CROUCH ? SEE_RANGE_CROUCH : SEE_RANGE;
   if (d > range) return false;
   return hasLineOfSight(map, k.x, k.y, s.x, s.y);
@@ -373,6 +387,17 @@ function pickPatrolTarget(k, world) {
     Math.hypot(a.x - k.x, a.y - k.y) - Math.hypot(b.x - k.x, b.y - k.y));
   const pool = sorted.slice(Math.floor(sorted.length / 2));
   return pool[Math.floor(world.rng.next() * pool.length)] ?? sorted[0];
+}
+
+// Freshest scratch mark in tracking range, ignoring ones we're standing on
+function freshestScratch(k, world) {
+  let best = null;
+  for (const m of world.scratches || []) {
+    const d = Math.hypot(m.x - k.x, m.y - k.y);
+    if (d < METER || d > SCRATCH_TRACK_RANGE) continue;
+    if (!best || m.age < best.age) best = m;
+  }
+  return best;
 }
 
 // Straight-line burst at the lunge speed, ignoring the path

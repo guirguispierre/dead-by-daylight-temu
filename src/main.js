@@ -1,8 +1,8 @@
 import { GAME, COLORS } from './config.js';
 import { input } from './input.js';
 import {
-  createSurvivor, updateSurvivor, updateHooked, updateHeal, unhookSurvivor,
-  STANCE, HEALTH,
+  createSurvivor, updateSurvivor, updateHooked, unhookSurvivor,
+  STANCE, HEALTH, SELF_HEAL_SECONDS,
 } from './survivor.js';
 import { createBot, updateBot } from './bot.js';
 import { generateMap, collideWithMap, vaultLanding } from './map.js';
@@ -10,6 +10,7 @@ import { drawMap } from './render.js';
 import { createRng } from './rng.js';
 import {
   startRepair, updateRepair, cancelAction, generatorsDone, updateRegression,
+  spawnSkillCheck, advanceSkillCheck,
 } from './generators.js';
 import { REGRESS_PER_SEC } from './killer.js';
 import { findInteraction } from './interact.js';
@@ -57,6 +58,7 @@ const world = {
   gatesPowered: false,
   collapseTimer: null,  // endgame collapse countdown, starts when a gate opens
   escaped: false,
+  scratches: [],        // {x, y, age} marks left by running survivors
   collide: (x, y, radius) => collideWithMap(map, survivor.x, survivor.y, x, y, radius),
 };
 
@@ -196,9 +198,8 @@ function tick(dt) {
           cancelAction(s);
         } else if (s.action.type === 'repair') {
           world.events.push(...updateRepair(s, input, dt, world.rng));
-        } else if (s.action.type === 'heal') {
-          const ev = updateHeal(s, dt);
-          if (ev) world.events.push({ type: ev });
+        } else if (s.action.type === 'heal' || s.action.type === 'heal-other') {
+          updateHealAction(s, dt);
         } else if (s.action.type === 'unhook') {
           const t = s.action.target;
           if (t.health !== HEALTH.HOOKED) { s.action = null; }
@@ -207,17 +208,6 @@ function tick(dt) {
             if (s.action.timer <= 0) {
               unhookSurvivor(t);
               world.events.push({ type: 'unhooked', who: t });
-              s.action = null;
-            }
-          }
-        } else if (s.action.type === 'heal-other') {
-          const t = s.action.target;
-          if (t.health !== HEALTH.INJURED && t.health !== HEALTH.DOWNED) { s.action = null; }
-          else {
-            s.action.timer -= dt;
-            if (s.action.timer <= 0) {
-              t.health = t.health === HEALTH.DOWNED ? HEALTH.INJURED : HEALTH.HEALTHY;
-              world.events.push({ type: 'healed', who: t });
               s.action = null;
             }
           }
@@ -256,7 +246,7 @@ function tick(dt) {
           } else if (interaction.type === 'unhook') {
             s.action = { type: 'unhook', target: interaction.target, timer: UNHOOK_SECONDS };
           } else if (interaction.type === 'heal-other') {
-            s.action = { type: 'heal-other', target: interaction.target, timer: HEAL_OTHER_SECONDS };
+            s.action = { type: 'heal-other', target: interaction.target, skillCheck: null };
           } else if (interaction.type === 'drop-pallet') {
             dropPallet(interaction.target);
           } else if (interaction.type === 'vault') {
@@ -272,6 +262,22 @@ function tick(dt) {
         }
       }
     }
+  }
+
+  // Running survivors leave scratch marks the killer can track
+  for (const sv of world.survivors) {
+    if ((sv.health === HEALTH.HEALTHY || sv.health === HEALTH.INJURED) &&
+        sv.moving && sv.stance === STANCE.RUN) {
+      sv.scratchTimer = (sv.scratchTimer || 0) - dt;
+      if (sv.scratchTimer <= 0) {
+        world.scratches.push({ x: sv.x, y: sv.y, age: 0 });
+        sv.scratchTimer = 0.25;
+      }
+    }
+  }
+  for (const m of world.scratches) m.age += dt;
+  if (world.scratches.length && world.scratches[0].age > SCRATCH_LIFETIME) {
+    world.scratches = world.scratches.filter(m => m.age <= SCRATCH_LIFETIME);
   }
 
   checkEscape(s);
@@ -300,6 +306,57 @@ function tick(dt) {
   cam.y += (s.y - cam.y) * 0.12;
 
   input.endFrame();
+}
+
+const SCRATCH_LIFETIME = 10;           // seconds scratch marks linger
+
+const HEAL_SKILLCHECK_CHANCE = 0.15;   // per second while healing
+const HEAL_GREAT_BONUS = 0.03;         // great healing skill check
+const HEAL_MISS_PENALTY = 0.10;        // plus a loud noise the killer hears
+
+// Player-driven healing (self via Self-Care speed, or a teammate).
+// Progress lives on the patient so partial heals persist.
+function updateHealAction(s, dt) {
+  const isOther = s.action.type === 'heal-other';
+  const t = isOther ? s.action.target : s;
+
+  const healable = isOther
+    ? (t.health === HEALTH.INJURED || t.health === HEALTH.DOWNED)
+    : t.health === HEALTH.INJURED;
+  if (!healable) { s.action = null; return; }
+
+  const sc = s.action.skillCheck;
+  if (sc) {
+    const result = advanceSkillCheck(sc, input, dt);
+    if (!result) return;
+    s.action.skillCheck = null;
+    if (result === 'great') {
+      t.healProgress = Math.min(1, (t.healProgress || 0) + HEAL_GREAT_BONUS);
+      world.events.push({ type: 'skillcheck-great' });
+    } else if (result === 'good') {
+      world.events.push({ type: 'skillcheck-good' });
+    } else {
+      t.healProgress = Math.max(0, (t.healProgress || 0) - HEAL_MISS_PENALTY);
+      // Botched needlework is loud — the killer hears it
+      world.events.push({ type: 'heal-fail', x: s.x, y: s.y });
+    }
+    return;
+  }
+
+  const duration = isOther ? HEAL_OTHER_SECONDS : SELF_HEAL_SECONDS;
+  t.healProgress = (t.healProgress || 0) + dt / duration;
+
+  if (world.rng.chance(HEAL_SKILLCHECK_CHANCE * dt)) {
+    s.action.skillCheck = spawnSkillCheck(world.rng);
+    world.events.push({ type: 'skillcheck-warn' });
+  }
+
+  if (t.healProgress >= 1) {
+    t.healProgress = 0;
+    t.health = t.health === HEALTH.DOWNED ? HEALTH.INJURED : HEALTH.HEALTHY;
+    s.action = null;
+    world.events.push({ type: 'healed', who: isOther ? t : undefined });
+  }
 }
 
 function checkEscape(s) {
@@ -341,6 +398,7 @@ function render() {
   ctx.translate(Math.round(w / 2 - cam.x), Math.round(h / 2 - cam.y));
 
   drawMap(ctx, world.map, cam.x - w / 2, cam.y - h / 2, w, h);
+  drawScratches();
   drawKiller(world.killer);
   for (const b of world.bots) {
     drawSurvivor(b, b.color);
@@ -408,6 +466,15 @@ function drawDeathOverlay(w, h) {
   ctx.fillStyle = '#e8e3d0';
   ctx.font = '400 20px system-ui, sans-serif';
   ctx.fillText('The Entity is pleased. Press R to try again.', w / 2, h / 2 + 28);
+}
+
+function drawScratches() {
+  for (const m of world.scratches) {
+    const alpha = 0.45 * (1 - m.age / SCRATCH_LIFETIME);
+    if (alpha <= 0) continue;
+    ctx.fillStyle = `rgba(190, 30, 35, ${alpha.toFixed(3)})`;
+    ctx.fillRect(m.x - 1.5, m.y - 1.5, 3, 3);
+  }
 }
 
 function drawKiller(k) {

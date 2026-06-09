@@ -91,8 +91,9 @@ function drawStatusBars(ctx, world, w, h) {
     ctx.fillText(label, w / 2, h * 0.72 - 10);
   }
 
-  if (s.action && s.action.type === 'heal') {
-    bar(ctx, w / 2 - 120, h * 0.78, 240, 10, s.healProgress || 0, '#9bc995');
+  if (s.action && (s.action.type === 'heal' || s.action.type === 'heal-other')) {
+    const patient = s.action.type === 'heal-other' ? s.action.target : s;
+    bar(ctx, w / 2 - 120, h * 0.78, 240, 10, patient.healProgress || 0, '#9bc995');
   }
 
   ctx.restore();
@@ -154,7 +155,6 @@ function drawActionProgress(ctx, world, w, h) {
   if (s.action.type === 'repair') progress = s.action.gen.progress;
   else if (s.action.type === 'open-gate') progress = s.action.gate.progress;
   else if (s.action.type === 'unhook') progress = 1 - s.action.timer / 1;
-  else if (s.action.type === 'heal-other') progress = 1 - s.action.timer / 16;
   if (progress === null) return;
 
   ctx.save();
@@ -173,7 +173,8 @@ function drawActionProgress(ctx, world, w, h) {
 
 function drawSkillCheck(ctx, world, w, h) {
   const s = world.survivor;
-  const sc = s.action && s.action.skillCheck;
+  const sc = (s.action && s.action.skillCheck) ||
+             (s.hookState && s.hookState.skillCheck);
   if (!sc) return;
 
   const { ZONE_SIZE, GREAT_SIZE } = skillCheckGeometry();
