@@ -15,11 +15,23 @@
     }
     canvas {
       display: block;
-      image-rendering: pixelated;
+    }
+    #game3d {
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 0;
+    }
+    #game {
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 1; /* HUD + 2D view layer above the WebGL canvas */
     }
   </style>
 </head>
 <body>
+  <canvas id="game3d"></canvas>
   <canvas id="game"></canvas>
   <script type="module" src="src/main.js"></script>
 </body>
