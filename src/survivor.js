@@ -1,4 +1,5 @@
 import { SURVIVOR, METER } from './config.js';
+import { spawnSkillCheck, advanceSkillCheck } from './generators.js';
 
 // Movement stances
 export const STANCE = { WALK: 'walk', RUN: 'run', CROUCH: 'crouch' };
@@ -24,6 +25,7 @@ export const SELF_UNHOOK_CHANCE = 0.04; // per attempt, 3 attempts (DBD's 4%)
 export const SELF_UNHOOK_PENALTY = 20;  // seconds of stage 1 lost per failure
 export const SELF_HEAL_SECONDS = 45.7;  // Self-Care: 35% of the 16s heal speed
 export const ENDURANCE_SECONDS = 10;    // basekit post-unhook protection
+const STRUGGLE_MISS_PENALTY = 20;       // stage-2 skill check miss cost
 
 export function createSurvivor(x, y) {
   return {
@@ -106,13 +108,35 @@ export function updateHooked(s, inp, dt, rng) {
   const hs = s.hookState;
   hs.timer -= dt;
 
-  if (hs.stage === 1 && inp.interactPressed && hs.attemptsLeft > 0) {
+  if (hs.stage === 1 && inp.interactPressed && hs.attemptsLeft > 0 && !hs.skillCheck) {
     hs.attemptsLeft -= 1;
     if (rng.chance(SELF_UNHOOK_CHANCE)) {
       unhookSurvivor(s);
       return 'self-unhook';
     }
     hs.timer -= SELF_UNHOOK_PENALTY;
+  }
+
+  // Struggle phase: the Entity tests you with skill checks (player only;
+  // misses cost 20s of the stage)
+  if (hs.stage === 2 && !s.isBot) {
+    if (hs.skillCheck) {
+      const result = advanceSkillCheck(hs.skillCheck, inp, dt);
+      if (result === 'miss') {
+        hs.skillCheck = null;
+        hs.timer -= STRUGGLE_MISS_PENALTY;
+        if (hs.timer > 0) return 'struggle-fail';
+      } else if (result) {
+        hs.skillCheck = null;
+      }
+    } else {
+      hs.checkTimer = (hs.checkTimer ?? 2.5) - dt;
+      if (hs.checkTimer <= 0) {
+        hs.skillCheck = spawnSkillCheck(rng);
+        hs.checkTimer = 3 + rng.next() * 2.5;
+        return 'skillcheck-warn';
+      }
+    }
   }
 
   if (hs.timer <= 0) {
