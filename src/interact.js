@@ -19,5 +19,10 @@ export function findInteraction(world) {
     }
   }
 
+  // Nothing nearby and hurt? Patch yourself up.
+  if (!best && s.health === 'injured') {
+    best = { type: 'heal', target: null, label: 'Self-heal' };
+  }
+
   return best;
 }

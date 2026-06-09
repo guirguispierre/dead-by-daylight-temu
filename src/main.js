@@ -1,6 +1,8 @@
 import { GAME, COLORS } from './config.js';
 import { input } from './input.js';
-import { createSurvivor, updateSurvivor, STANCE } from './survivor.js';
+import {
+  createSurvivor, updateSurvivor, updateHooked, updateHeal, STANCE, HEALTH,
+} from './survivor.js';
 import { generateMap, collideWithMap } from './map.js';
 import { drawMap } from './render.js';
 import { createRng } from './rng.js';
@@ -55,27 +57,70 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 
+const WIGGLE_FILL_SECONDS = 14;
+
 function tick(dt) {
   const s = world.survivor;
   world.events.length = 0;
+  world.prompt = null;
 
-  if (s.action) {
-    // Any movement input breaks the interaction
-    if (input.moveX !== 0 || input.moveY !== 0) {
-      cancelAction(s);
-    } else if (s.action.type === 'repair') {
-      world.events.push(...updateRepair(s, input, dt, world.rng));
+  switch (s.health) {
+    case HEALTH.DEAD: {
+      if (input.wasPressed('KeyR')) location.reload();
+      break;
     }
-    world.prompt = null;
-  } else {
-    updateSurvivor(s, input, dt, world.collide);
 
-    const interaction = findInteraction(world);
-    world.prompt = interaction ? interaction.label : null;
-    if (interaction && input.interactPressed) {
-      if (interaction.type === 'repair') {
-        startRepair(s, interaction.target, world.rng);
-        world.prompt = null;
+    case HEALTH.HOOKED: {
+      const ev = updateHooked(s, input, dt, world.rng);
+      if (ev) world.events.push({ type: ev });
+      if (s.health === HEALTH.DEAD) world.deathCause = 'sacrificed';
+      break;
+    }
+
+    case HEALTH.CARRIED: {
+      // Wiggle fills passively; mashing A/D speeds it up
+      s.wiggle += dt / WIGGLE_FILL_SECONDS;
+      if (input.wasPressed('KeyA') || input.wasPressed('KeyD') ||
+          input.wasPressed('ArrowLeft') || input.wasPressed('ArrowRight')) {
+        s.wiggle += 0.02;
+      }
+      break;
+    }
+
+    default: {
+      // healthy / injured / downed
+      if (s.action) {
+        // Any movement input breaks the interaction
+        if (input.moveX !== 0 || input.moveY !== 0) {
+          cancelAction(s);
+        } else if (s.action.type === 'repair') {
+          world.events.push(...updateRepair(s, input, dt, world.rng));
+        } else if (s.action.type === 'heal') {
+          const ev = updateHeal(s, dt);
+          if (ev) world.events.push({ type: ev });
+        }
+      } else {
+        updateSurvivor(s, input, dt, world.collide);
+
+        if (s.health === HEALTH.DOWNED) {
+          if (s.bleedOut <= 0) {
+            s.health = HEALTH.DEAD;
+            world.deathCause = 'bled-out';
+            world.events.push({ type: 'sacrificed' });
+          }
+          break;
+        }
+
+        const interaction = findInteraction(world);
+        world.prompt = interaction ? interaction.label : null;
+        if (interaction && input.interactPressed) {
+          if (interaction.type === 'repair') {
+            startRepair(s, interaction.target, world.rng);
+          } else if (interaction.type === 'heal') {
+            s.action = { type: 'heal' };
+          }
+          world.prompt = null;
+        }
       }
     }
   }
@@ -114,6 +159,21 @@ function render() {
 
   drawTerrorVignette(w, h);
   drawHud(ctx, world, w, h);
+  if (world.survivor.health === HEALTH.DEAD) drawDeathOverlay(w, h);
+}
+
+function drawDeathOverlay(w, h) {
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+  ctx.fillRect(0, 0, w, h);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#a32330';
+  ctx.font = '700 52px system-ui, sans-serif';
+  ctx.fillText(
+    world.deathCause === 'bled-out' ? 'YOU BLED OUT' : 'SACRIFICED',
+    w / 2, h / 2 - 20);
+  ctx.fillStyle = '#e8e3d0';
+  ctx.font = '400 20px system-ui, sans-serif';
+  ctx.fillText('The Entity is pleased. Press R to try again.', w / 2, h / 2 + 28);
 }
 
 function drawKiller(k) {
@@ -148,12 +208,46 @@ function drawTerrorVignette(w, h) {
 }
 
 function drawSurvivor(s) {
+  if (s.health === HEALTH.DEAD) return;
+
   const r = s.stance === STANCE.CROUCH ? s.radius * 0.75 : s.radius;
 
-  ctx.fillStyle = COLORS.SURVIVOR;
+  if (s.health === HEALTH.DOWNED) {
+    // Crawling in a pool of blood
+    ctx.fillStyle = 'rgba(140, 20, 25, 0.5)';
+    ctx.beginPath();
+    ctx.ellipse(s.x, s.y, r * 1.8, r * 1.2, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = COLORS.SURVIVOR;
+    ctx.beginPath();
+    ctx.ellipse(s.x, s.y, r * 1.3, r * 0.7, s.facing, 0, Math.PI * 2);
+    ctx.fill();
+    return;
+  }
+
+  ctx.fillStyle = s.health === HEALTH.INJURED ? '#c08458' : COLORS.SURVIVOR;
   ctx.beginPath();
   ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
   ctx.fill();
+
+  if (s.health === HEALTH.INJURED) {
+    // Blood speckles
+    ctx.fillStyle = 'rgba(163, 35, 48, 0.85)';
+    ctx.beginPath();
+    ctx.arc(s.x + r * 0.3, s.y - r * 0.2, 2, 0, Math.PI * 2);
+    ctx.arc(s.x - r * 0.35, s.y + r * 0.3, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  if (s.health === HEALTH.HOOKED) {
+    // Slumped on the hook: arms up line
+    ctx.strokeStyle = COLORS.HOOK;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(s.x, s.y - r);
+    ctx.lineTo(s.x, s.y - r - 6);
+    ctx.stroke();
+  }
 
   ctx.strokeStyle = '#fff';
   ctx.lineWidth = 2;
