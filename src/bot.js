@@ -4,7 +4,7 @@
 import { SURVIVOR, GAME, METER } from './config.js';
 import { createSurvivor, HEALTH, STANCE, unhookSurvivor } from './survivor.js';
 import { crewRate, creditRegressionPause } from './generators.js';
-import { collideWithMap } from './map.js';
+import { collideWithMap, hasLineOfSight } from './map.js';
 import { findPath } from './pathfind.js';
 
 const FLEE_RANGE = 13 * METER;      // killer this close (with LOS) => run away
@@ -241,6 +241,8 @@ function isThreatened(bot, k, map) {
   if (k.target === bot && k.state === 'chase') return true;
   // Rescuers hold their nerve unless the killer is right on top of them
   if (bot.goal && bot.goal.kind === 'rescue') return d < 4 * METER;
+  // A killer you can't see isn't scary yet — keep working behind walls
+  if (!hasLineOfSight(map, k.x, k.y, bot.x, bot.y)) return d < 3 * METER;
   return d < FLEE_RANGE * 0.7;
 }
 
