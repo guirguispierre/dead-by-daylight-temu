@@ -1,6 +1,11 @@
 // Third-person 3D renderer (three.js/WebGL). The 2D simulation stays
 // authoritative: world (x, y) maps to 3D (x, 0, z=y), 1 cell = 1 meter.
 // This module only mirrors sim state into meshes; it never mutates it.
+//
+// Characters are original articulated rigs built from primitives (torso,
+// head, limbs with pivot groups) and animated procedurally: walk cycles
+// driven by distance traveled, plus state poses (crouch, crawl, carry,
+// hook hang) and killer action animations (swing, kick, smash, stagger).
 
 import * as THREE from '../vendor/three.module.js';
 import { CELL, T } from './map.js';
@@ -15,13 +20,12 @@ let scene = null;
 let camera = null;
 
 // Dynamic mesh registries
-let genMeshes = [];
+let genRigs = [];
 let palletMeshes = [];
 let gateGroups = [];
 let hatchMesh = null;
-let survivorMeshes = new Map();  // survivor object -> mesh group
-let killerGroup = null;
-let redStain = null;
+let survivorRigs = new Map();  // survivor object -> rig
+let killerRig = null;
 let scratchPool = [];
 let playerLight = null;
 
@@ -29,13 +33,12 @@ const MAT = {
   floor: new THREE.MeshStandardMaterial({ color: 0x16161f, roughness: 1 }),
   wall: new THREE.MeshStandardMaterial({ color: 0x3a3450, roughness: 0.9 }),
   window: new THREE.MeshStandardMaterial({ color: 0x46506a, roughness: 0.9 }),
-  gen: new THREE.MeshStandardMaterial({ color: 0xcaa84e, roughness: 0.6 }),
-  genDone: new THREE.MeshStandardMaterial({ color: 0xe8e07a, emissive: 0xe8e07a, emissiveIntensity: 0.7 }),
-  genRegress: new THREE.MeshStandardMaterial({ color: 0xa84e3a, emissive: 0xa83a2a, emissiveIntensity: 0.4 }),
-  hook: new THREE.MeshStandardMaterial({ color: 0x7a4a4a, roughness: 0.8 }),
+  genBody: new THREE.MeshStandardMaterial({ color: 0x8a7a40, roughness: 0.6, metalness: 0.4 }),
+  genDark: new THREE.MeshStandardMaterial({ color: 0x3a3014, roughness: 0.8 }),
+  piston: new THREE.MeshStandardMaterial({ color: 0xb8b0a0, roughness: 0.4, metalness: 0.7 }),
+  hook: new THREE.MeshStandardMaterial({ color: 0x6a4040, roughness: 0.8 }),
   pallet: new THREE.MeshStandardMaterial({ color: 0x8a6b43, roughness: 1 }),
   gate: new THREE.MeshStandardMaterial({ color: 0x4e6e4e, roughness: 0.9 }),
-  killer: new THREE.MeshStandardMaterial({ color: 0xa32330, roughness: 0.7 }),
   hatch: new THREE.MeshStandardMaterial({ color: 0x05050a, roughness: 1 }),
   scratch: new THREE.MeshBasicMaterial({ color: 0xbe1e23, transparent: true }),
 };
@@ -108,47 +111,208 @@ function buildStatic(map) {
   });
   scene.add(sills);
 
-  // Hooks: post + curve hint
+  // Hooks: post, arm, and the hook curve itself
   for (const h of map.hooks) {
+    const g = new THREE.Group();
     const post = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.08 * CELL, 0.1 * CELL, 2.4 * CELL, 6), MAT.hook);
-    post.position.set(h.x, 1.2 * CELL, h.y);
-    scene.add(post);
+      new THREE.CylinderGeometry(0.08 * CELL, 0.11 * CELL, 2.4 * CELL, 7), MAT.hook);
+    post.position.y = 1.2 * CELL;
+    g.add(post);
     const arm = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.05 * CELL, 0.05 * CELL, 0.6 * CELL, 6), MAT.hook);
+      new THREE.CylinderGeometry(0.05 * CELL, 0.05 * CELL, 0.7 * CELL, 6), MAT.hook);
     arm.rotation.z = Math.PI / 2;
-    arm.position.set(h.x + 0.3 * CELL, 2.3 * CELL, h.y);
-    scene.add(arm);
+    arm.position.set(0.35 * CELL, 2.3 * CELL, 0);
+    g.add(arm);
+    const barb = new THREE.Mesh(
+      new THREE.TorusGeometry(0.12 * CELL, 0.03 * CELL, 6, 10, Math.PI * 1.2), MAT.hook);
+    barb.position.set(0.66 * CELL, 2.2 * CELL, 0);
+    g.add(barb);
+    g.position.set(h.x, 0, h.y);
+    scene.add(g);
   }
 }
 
+// --- Rig factory: articulated humanoid from primitives -------------------
+
+function limb(width, length, material) {
+  // Pivot group at the joint; the mesh hangs below it
+  const pivot = new THREE.Group();
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, length, width), material);
+  mesh.position.y = -length / 2;
+  pivot.add(mesh);
+  return pivot;
+}
+
+function makeHumanoid({ skin, cloth, scale = 1, bulk = 1 }) {
+  const S = CELL * scale;
+  const clothMat = new THREE.MeshStandardMaterial({ color: cloth, roughness: 0.85 });
+  const skinMat = new THREE.MeshStandardMaterial({ color: skin, roughness: 0.7 });
+
+  const root = new THREE.Group();   // feet at y=0
+  const body = new THREE.Group();   // hip pivot — bobs/leans
+  body.position.y = 0.8 * S;
+  root.add(body);
+
+  const torso = new THREE.Mesh(
+    new THREE.BoxGeometry(0.38 * S * bulk, 0.56 * S, 0.22 * S * bulk), clothMat);
+  torso.position.y = 0.28 * S;
+  body.add(torso);
+
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.13 * S, 10, 8), skinMat);
+  head.position.y = 0.70 * S;
+  body.add(head);
+
+  const armL = limb(0.09 * S * bulk, 0.62 * S, clothMat);
+  armL.position.set(-0.24 * S * bulk, 0.52 * S, 0);
+  body.add(armL);
+  const armR = limb(0.09 * S * bulk, 0.62 * S, clothMat);
+  armR.position.set(0.24 * S * bulk, 0.52 * S, 0);
+  body.add(armR);
+
+  const legL = limb(0.12 * S * bulk, 0.8 * S, clothMat);
+  legL.position.set(-0.11 * S, 0, 0);
+  body.add(legL);
+  const legR = limb(0.12 * S * bulk, 0.8 * S, clothMat);
+  legR.position.set(0.11 * S, 0, 0);
+  body.add(legR);
+
+  return {
+    root, body, head, armL, armR, legL, legR,
+    clothMat, skinMat, S,
+    phase: 0, lastX: null, lastY: null,
+  };
+}
+
+function resetPose(rig) {
+  rig.root.rotation.set(0, rig.root.rotation.y, 0);
+  rig.body.position.y = 0.8 * rig.S;
+  rig.body.rotation.set(0, 0, 0);
+  rig.armL.rotation.set(0, 0, 0.06);
+  rig.armR.rotation.set(0, 0, -0.06);
+  rig.legL.rotation.set(0, 0, 0);
+  rig.legR.rotation.set(0, 0, 0);
+}
+
+// Advance the walk phase by distance traveled so footfalls match speed
+function advancePhase(rig, x, y, strideScale = 1) {
+  if (rig.lastX !== null) {
+    rig.phase += Math.hypot(x - rig.lastX, y - rig.lastY) / (0.55 * CELL) * strideScale;
+  }
+  rig.lastX = x;
+  rig.lastY = y;
+}
+
+function poseWalk(rig, amp) {
+  const s = Math.sin(rig.phase * Math.PI);
+  rig.legL.rotation.x = s * amp;
+  rig.legR.rotation.x = -s * amp;
+  rig.armL.rotation.x = -s * amp * 0.8;
+  rig.armR.rotation.x = s * amp * 0.8;
+  rig.body.position.y = 0.8 * rig.S + Math.abs(Math.cos(rig.phase * Math.PI)) * 0.03 * rig.S;
+}
+
+function poseCrouch(rig, amp) {
+  rig.body.position.y = 0.52 * rig.S;
+  rig.body.rotation.x = 0.35;
+  const s = Math.sin(rig.phase * Math.PI);
+  rig.legL.rotation.x = 0.9 + s * amp * 0.5;
+  rig.legR.rotation.x = 0.9 - s * amp * 0.5;
+  rig.armL.rotation.x = -0.4;
+  rig.armR.rotation.x = -0.4;
+}
+
+function poseCrawl(rig, time) {
+  // Prone, dragging forward
+  rig.root.rotation.x = -Math.PI / 2 + 0.12;
+  rig.body.position.y = 0.18 * rig.S;
+  const s = Math.sin(time * 4);
+  rig.armL.rotation.x = -1.4 + s * 0.5;
+  rig.armR.rotation.x = -1.4 - s * 0.5;
+  rig.legL.rotation.x = 0.2 + s * 0.2;
+  rig.legR.rotation.x = 0.2 - s * 0.2;
+}
+
+function poseHang(rig, time) {
+  // Strung up: arms above, slow sway
+  rig.body.position.y = 1.15 * rig.S;
+  rig.root.rotation.z = Math.sin(time * 1.3) * 0.06;
+  rig.armL.rotation.set(Math.PI * 0.92, 0, 0.25);
+  rig.armR.rotation.set(Math.PI * 0.92, 0, -0.25);
+  rig.legL.rotation.x = 0.15;
+  rig.legR.rotation.x = -0.1;
+  rig.body.rotation.x = 0.15; // slump
+}
+
+function poseCarried(rig, time) {
+  // Over the killer's shoulder, kicking
+  rig.root.rotation.z = Math.PI / 2;
+  rig.body.position.y = 0.4 * rig.S;
+  const s = Math.sin(time * 9);
+  rig.legL.rotation.x = s * 0.7;
+  rig.legR.rotation.x = -s * 0.7;
+  rig.armL.rotation.x = -0.6 + s * 0.3;
+  rig.armR.rotation.x = -0.6 - s * 0.3;
+}
+
+function poseRepair(rig, time) {
+  // Kneeling at the machine, hands working
+  rig.body.position.y = 0.55 * rig.S;
+  rig.body.rotation.x = 0.45;
+  rig.legL.rotation.x = 1.1;
+  rig.legR.rotation.x = 1.1;
+  const s = Math.sin(time * 10);
+  rig.armL.rotation.x = -1.2 + s * 0.25;
+  rig.armR.rotation.x = -1.2 - s * 0.25;
+}
+
+// --- Scene construction ---------------------------------------------------
+
 function buildDynamic(map) {
-  genMeshes = [];
+  genRigs = [];
   palletMeshes = [];
   gateGroups = [];
-  survivorMeshes = new Map();
+  survivorRigs = new Map();
   scratchPool = [];
 
-  // Generators: chunky machines
+  // Generators: engine block with animated pistons and a top lamp
   for (const g of map.generators) {
-    const mesh = new THREE.Mesh(
-      new THREE.BoxGeometry(0.9 * CELL, 1.1 * CELL, 0.9 * CELL), MAT.gen);
-    mesh.position.set(g.x, 0.55 * CELL, g.y);
-    scene.add(mesh);
+    const group = new THREE.Group();
+    const base = new THREE.Mesh(
+      new THREE.BoxGeometry(0.95 * CELL, 0.55 * CELL, 0.8 * CELL), MAT.genBody);
+    base.position.y = 0.28 * CELL;
+    group.add(base);
+    const block = new THREE.Mesh(
+      new THREE.BoxGeometry(0.7 * CELL, 0.35 * CELL, 0.55 * CELL), MAT.genDark);
+    block.position.y = 0.72 * CELL;
+    group.add(block);
+    const pistons = [];
+    for (const side of [-1, 1]) {
+      const p = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.07 * CELL, 0.07 * CELL, 0.4 * CELL, 8), MAT.piston);
+      p.position.set(side * 0.18 * CELL, 0.95 * CELL, 0);
+      group.add(p);
+      pistons.push(p);
+    }
+    const lamp = new THREE.Mesh(
+      new THREE.SphereGeometry(0.07 * CELL, 8, 6),
+      new THREE.MeshStandardMaterial({ color: 0x332b10, emissive: 0x000000 }));
+    lamp.position.set(0, 1.18 * CELL, 0);
+    group.add(lamp);
     const light = new THREE.PointLight(0xe8e07a, 0, 5 * CELL);
-    light.position.set(g.x, 1.6 * CELL, g.y);
-    scene.add(light);
-    genMeshes.push({ g, mesh, light });
+    light.position.set(0, 1.6 * CELL, 0);
+    group.add(light);
+    group.position.set(g.x, 0, g.y);
+    scene.add(group);
+    genRigs.push({ g, group, pistons, lamp, light });
   }
 
   // Pallets: orientation follows the wall run they plug
   for (const p of map.pallets) {
     const alongX = map.at(p.cx - 1, p.cy) === T.WALL || map.at(p.cx + 1, p.cy) === T.WALL;
-    const board = new THREE.Mesh(
-      new THREE.BoxGeometry(CELL, 1.2 * CELL, 0.15 * CELL), MAT.pallet);
+    const board = boardPallet();
     if (!alongX) board.rotation.y = Math.PI / 2;
     scene.add(board);
-    palletMeshes.push({ p, board, alongX });
+    palletMeshes.push({ p, board, alongX, dropAnim: 0 });
   }
 
   // Gates: slabs per cell, hidden when open
@@ -181,62 +345,97 @@ function buildDynamic(map) {
     scratchPool.push(q);
   }
 
-  // Killer: hulking capsule, glowing eyes, red stain spotlight
-  killerGroup = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.45 * CELL, 1.4 * CELL, 4, 10), MAT.killer);
-  body.position.y = 1.15 * CELL;
-  killerGroup.add(body);
-  const eyeGeo = new THREE.SphereGeometry(1.6, 6, 6);
+  // The Killer: hulking hunched rig with a cleaver and glowing eyes
+  killerRig = makeHumanoid({ skin: 0x6a4848, cloth: 0x701822, scale: 1.28, bulk: 1.35 });
+  killerRig.body.rotation.x = 0.18; // permanent hunch
   const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffd9a0 });
   for (const side of [-1, 1]) {
-    const eye = new THREE.Mesh(eyeGeo, eyeMat);
-    eye.position.set(side * 3.5, 1.9 * CELL, 0.42 * CELL);
-    killerGroup.add(eye);
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(1.5, 6, 6), eyeMat);
+    eye.position.set(side * 0.055 * killerRig.S, 0.71 * killerRig.S, 0.1 * killerRig.S);
+    killerRig.body.add(eye);
   }
-  redStain = new THREE.SpotLight(0xff2030, 14, 7 * CELL, 0.45, 0.6, 1.2);
+  // Cleaver in the right hand
+  const blade = new THREE.Mesh(
+    new THREE.BoxGeometry(0.04 * killerRig.S, 0.5 * killerRig.S, 0.16 * killerRig.S),
+    new THREE.MeshStandardMaterial({ color: 0x9aa0a8, roughness: 0.3, metalness: 0.8 }));
+  blade.position.y = -0.62 * killerRig.S - 0.2 * killerRig.S;
+  killerRig.armR.add(blade);
+  // Red stain spotlight
+  const redStain = new THREE.SpotLight(0xff2030, 14, 7 * CELL, 0.45, 0.6, 1.2);
   redStain.position.set(0, 1.9 * CELL, 0);
   const stainTarget = new THREE.Object3D();
   stainTarget.position.set(0, 0, 4 * CELL);
-  killerGroup.add(stainTarget);
+  killerRig.root.add(stainTarget);
   redStain.target = stainTarget;
-  killerGroup.add(redStain);
-  scene.add(killerGroup);
+  killerRig.root.add(redStain);
+  scene.add(killerRig.root);
 }
 
-function survivorMesh(sv, color) {
+function boardPallet() {
+  // A pallet of slats rather than a single board
   const group = new THREE.Group();
-  const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.8 });
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.32 * CELL, 1.0 * CELL, 4, 10), mat);
-  body.position.y = 0.85 * CELL;
-  group.add(body);
-  group.userData.body = body;
-  group.userData.mat = mat;
-  scene.add(group);
+  for (let i = 0; i < 4; i++) {
+    const slat = new THREE.Mesh(
+      new THREE.BoxGeometry(CELL, 0.18 * CELL, 0.1 * CELL), MAT.pallet);
+    slat.position.y = (i - 1.5) * 0.26 * CELL;
+    group.add(slat);
+  }
+  for (const side of [-0.4, 0.4]) {
+    const rail = new THREE.Mesh(
+      new THREE.BoxGeometry(0.1 * CELL, 1.1 * CELL, 0.12 * CELL), MAT.pallet);
+    rail.position.x = side * CELL;
+    group.add(rail);
+  }
   return group;
 }
 
-const SURVIVOR_COLOR = 0xd8b878;
+const SURVIVOR_SKIN = 0xd8b878;
+
+// --- Per-frame sync + animation -------------------------------------------
 
 export function update3d(world, camYaw) {
   if (!renderer) return;
   const map = world.map;
+  const time = world.time || 0;
 
-  // Generators: material reflects state, lit when done
-  for (const { g, mesh, light } of genMeshes) {
-    mesh.material = g.done ? MAT.genDone : (g.regressing ? MAT.genRegress : MAT.gen);
-    light.intensity = g.done ? 6 : 0;
+  // Generators: pistons pump while crewed, lamp lights when done,
+  // red flicker while regressing
+  for (const { g, group, pistons, lamp, light } of genRigs) {
+    if (!g.done && (g.crew || 0) > 0) {
+      pistons.forEach((p, i) => {
+        p.position.y = (0.95 + Math.max(0, Math.sin(time * 9 + i * Math.PI)) * 0.18) * CELL;
+      });
+    }
+    if (g.done) {
+      lamp.material.emissive.setHex(0xe8e07a);
+      lamp.material.emissiveIntensity = 1;
+      light.intensity = 6;
+    } else if (g.regressing) {
+      const flicker = 0.25 + Math.max(0, Math.sin(time * 17)) * 0.5;
+      lamp.material.emissive.setHex(0xc03020);
+      lamp.material.emissiveIntensity = flicker;
+      light.color.setHex(0xc03020);
+      light.intensity = flicker * 2;
+    } else {
+      lamp.material.emissive.setHex(0x000000);
+      light.intensity = 0;
+    }
   }
 
-  // Pallets
-  for (const { p, board, alongX } of palletMeshes) {
+  // Pallets: standing slats fall with a quick drop animation
+  for (const pm of palletMeshes) {
+    const { p, board } = pm;
     if (p.state === 'broken') { board.visible = false; continue; }
     board.visible = true;
     if (p.state === 'upright') {
+      pm.dropAnim = 0;
       board.rotation.x = 0;
       board.position.set(p.x, 0.6 * CELL, p.y);
     } else {
-      board.rotation.x = -Math.PI / 2;
-      board.position.set(p.x, 0.1 * CELL, p.y);
+      pm.dropAnim = Math.min(1, pm.dropAnim + 0.12);
+      const t = pm.dropAnim;
+      board.rotation.x = -Math.PI / 2 * (t * t); // accelerating fall
+      board.position.set(p.x, (0.6 - 0.5 * t) * CELL, p.y);
     }
   }
 
@@ -246,43 +445,84 @@ export function update3d(world, camYaw) {
 
   // Survivors
   for (const sv of world.survivors) {
-    let mesh = survivorMeshes.get(sv);
-    if (!mesh) {
-      const color = sv.isBot
-        ? parseInt(sv.color.slice(1), 16)
-        : SURVIVOR_COLOR;
-      mesh = survivorMesh(sv, color);
-      survivorMeshes.set(sv, mesh);
+    let rig = survivorRigs.get(sv);
+    if (!rig) {
+      const cloth = sv.isBot ? parseInt(sv.color.slice(1), 16) : 0x4a5a78;
+      rig = makeHumanoid({ skin: SURVIVOR_SKIN, cloth, scale: 1 });
+      scene.add(rig.root);
+      survivorRigs.set(sv, rig);
     }
-    if (sv.health === HEALTH.DEAD) { mesh.visible = false; continue; }
-    mesh.visible = true;
-    mesh.position.set(sv.x, 0, sv.y);
-    mesh.rotation.y = -sv.facing + Math.PI / 2;
+    if (sv.health === HEALTH.DEAD) { rig.root.visible = false; continue; }
+    rig.root.visible = true;
+    rig.root.position.set(sv.x, 0, sv.y);
+    rig.root.rotation.y = -sv.facing + Math.PI / 2;
 
-    const body = mesh.userData.body;
-    if (sv.health === HEALTH.DOWNED) {
-      body.rotation.x = Math.PI / 2;
-      body.position.y = 0.3 * CELL;
-    } else if (sv.health === HEALTH.HOOKED) {
-      body.rotation.x = 0;
-      body.position.y = 1.5 * CELL; // strung up
-    } else if (sv.health === HEALTH.CARRIED) {
-      body.rotation.x = Math.PI / 2;
-      body.position.y = 1.7 * CELL; // over the shoulder
-    } else {
-      body.rotation.x = 0;
-      body.position.y = sv.stance === STANCE.CROUCH ? 0.55 * CELL : 0.85 * CELL;
+    advancePhase(rig, sv.x, sv.y);
+    resetPose(rig);
+
+    const repairing = sv === world.survivor
+      ? (sv.action && (sv.action.type === 'repair' || sv.action.type === 'heal' ||
+                       sv.action.type === 'heal-other' || sv.action.type === 'open-gate'))
+      : (sv.goal && (sv.goal.kind === 'repair' || sv.goal.kind === 'heal' ||
+                     sv.goal.kind === 'open-gate') && !sv.moving);
+
+    if (sv.health === HEALTH.DOWNED) poseCrawl(rig, time);
+    else if (sv.health === HEALTH.HOOKED) poseHang(rig, time);
+    else if (sv.health === HEALTH.CARRIED) poseCarried(rig, time);
+    else if (repairing) poseRepair(rig, time);
+    else if (sv.stance === STANCE.CROUCH) poseCrouch(rig, sv.moving ? 0.6 : 0);
+    else if (sv.moving) poseWalk(rig, sv.stance === STANCE.RUN ? 0.85 : 0.5);
+    else {
+      // Idle breathing
+      rig.body.position.y = 0.8 * rig.S + Math.sin(time * 2) * 0.008 * rig.S;
     }
-    // Injured: darker, bloodier tint
-    mesh.userData.mat.color.setHex(
+
+    // Injured: bloodied clothes
+    rig.clothMat.color.setHex(
       sv.health === HEALTH.INJURED || sv.health === HEALTH.DOWNED
-        ? 0xb0764a
-        : (sv.isBot ? parseInt(sv.color.slice(1), 16) : SURVIVOR_COLOR));
+        ? 0x7a3a2e
+        : (sv.isBot ? parseInt(sv.color.slice(1), 16) : 0x4a5a78));
   }
 
-  // Killer
-  killerGroup.position.set(world.killer.x, 0, world.killer.y);
-  killerGroup.rotation.y = -world.killer.facing + Math.PI / 2;
+  // Killer rig + action animations
+  const k = world.killer;
+  killerRig.root.position.set(k.x, 0, k.y);
+  killerRig.root.rotation.y = -k.facing + Math.PI / 2;
+  advancePhase(killerRig, k.x, k.y, 0.8);
+  resetPose(killerRig);
+  killerRig.body.rotation.x = 0.18; // keep the hunch
+
+  if (k.lungeTimer > 0) {
+    // Swing: cleaver arm whips from wound-up to extended
+    const t = 1 - k.lungeTimer / 0.3;
+    killerRig.armR.rotation.x = -2.4 + t * 3.2;
+    killerRig.body.rotation.x = 0.3;
+    poseWalk(killerRig, 0.9);
+  } else if (k.state === 'stunned') {
+    killerRig.body.rotation.z = Math.sin(time * 10) * 0.18;
+    killerRig.body.rotation.x = -0.1;
+    killerRig.armL.rotation.x = -1.8; // clutching its face
+    killerRig.armR.rotation.x = -1.4;
+  } else if (k.state === 'break') {
+    // Overhead smash loop
+    const t = Math.max(0, Math.sin(time * 5));
+    killerRig.armR.rotation.x = -2.6 + t * 3.0;
+    killerRig.armL.rotation.x = -0.8;
+    killerRig.body.rotation.x = 0.35 + t * 0.1;
+  } else if (k.state === 'kick') {
+    const t = Math.max(0, Math.sin(time * 6));
+    killerRig.legR.rotation.x = -1.1 * t;
+    killerRig.body.rotation.x = 0.05;
+  } else if (k.state === 'carry') {
+    killerRig.armL.rotation.set(Math.PI, 0, -0.5); // steadying the load
+    poseWalk(killerRig, 0.5);
+  } else if (k.attackCooldown > 1.2) {
+    // Weapon wipe after a hit
+    killerRig.armR.rotation.x = 0.6;
+    killerRig.armL.rotation.x = -0.9;
+  } else {
+    poseWalk(killerRig, 0.7);
+  }
 
   // Scratch marks
   const marks = world.scratches || [];

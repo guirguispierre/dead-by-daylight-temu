@@ -165,6 +165,7 @@ function tick(dt) {
   const s = world.survivor;
   world.events.length = 0;
   world.prompt = null;
+  world.time = (world.time || 0) + dt; // animation clock
 
   if (!world.started) {
     if (input.wasPressed('Enter') || input.interactPressed) world.started = true;
