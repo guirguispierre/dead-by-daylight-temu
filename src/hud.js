@@ -7,10 +7,38 @@ import { HEALTH, HOOK_STAGE_SECONDS } from './survivor.js';
 export function drawHud(ctx, world, w, h) {
   drawGenCounter(ctx, world, w, h);
   drawHealthState(ctx, world, w, h);
+  drawTeam(ctx, world, w, h);
   drawPrompt(ctx, world, w, h);
   drawActionProgress(ctx, world, w, h);
   drawSkillCheck(ctx, world, w, h);
   drawStatusBars(ctx, world, w, h);
+}
+
+const BOT_STATUS = {
+  [HEALTH.HEALTHY]: ['●', '#9bc995'],
+  [HEALTH.INJURED]: ['●', '#d9a05b'],
+  [HEALTH.DOWNED]: ['●', '#c0392b'],
+  [HEALTH.CARRIED]: ['●', '#c0392b'],
+  [HEALTH.HOOKED]: ['♰', '#a32330'],
+  [HEALTH.DEAD]: ['✕', '#555'],
+};
+
+function drawTeam(ctx, world, w, h) {
+  ctx.save();
+  ctx.font = '500 14px system-ui, sans-serif';
+  ctx.textAlign = 'left';
+  let y = h / 2;
+  for (const b of world.bots) {
+    const [icon, color] = b.escapedFlag
+      ? ['➜', '#9bc995']
+      : (BOT_STATUS[b.health] ?? ['?', '#fff']);
+    ctx.fillStyle = color;
+    ctx.fillText(icon, 24, y);
+    ctx.fillStyle = b.health === HEALTH.DEAD && !b.escapedFlag ? '#777' : '#e8e3d0';
+    ctx.fillText(b.name + (b.escapedFlag ? ' (escaped)' : ''), 42, y);
+    y += 22;
+  }
+  ctx.restore();
 }
 
 const HEALTH_LABELS = {
@@ -125,6 +153,8 @@ function drawActionProgress(ctx, world, w, h) {
   let progress = null;
   if (s.action.type === 'repair') progress = s.action.gen.progress;
   else if (s.action.type === 'open-gate') progress = s.action.gate.progress;
+  else if (s.action.type === 'unhook') progress = 1 - s.action.timer / 1.5;
+  else if (s.action.type === 'heal-other') progress = 1 - s.action.timer / 8;
   if (progress === null) return;
 
   ctx.save();

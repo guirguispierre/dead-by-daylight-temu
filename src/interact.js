@@ -37,6 +37,23 @@ export function findInteraction(world) {
   }
   if (best) return best;
 
+  // Teammates: unhook or heal them
+  bestDist = Infinity;
+  for (const t of world.survivors) {
+    if (t === s) continue;
+    const d = Math.hypot(t.x - s.x, t.y - s.y);
+    if (d >= 1.6 * CELL || d >= bestDist) continue;
+    if (t.health === 'hooked') {
+      best = { type: 'unhook', target: t, label: `Unhook ${t.name}` };
+      bestDist = d;
+    } else if ((t.health === 'injured' || t.health === 'downed') &&
+               s.health !== 'downed') {
+      best = { type: 'heal-other', target: t, label: `Heal ${t.name}` };
+      bestDist = d;
+    }
+  }
+  if (best) return best;
+
   // Exit gate switches (only once powered)
   if (world.gatesPowered) {
     bestDist = Infinity;

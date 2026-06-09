@@ -112,6 +112,7 @@ export function playStinger(kind) {
       tone(260, now, 0.08, 0.12);
       break;
     case 'self-unhook':
+    case 'unhooked':
     case 'wiggle-free':
     case 'healed':
       tone(550, now, 0.15, 0.2);
