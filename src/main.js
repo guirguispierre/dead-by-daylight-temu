@@ -8,7 +8,10 @@ import { createBot, updateBot } from './bot.js';
 import { generateMap, collideWithMap, vaultLanding } from './map.js';
 import { drawMap } from './render.js';
 import { createRng } from './rng.js';
-import { startRepair, updateRepair, cancelAction, generatorsDone } from './generators.js';
+import {
+  startRepair, updateRepair, cancelAction, generatorsDone, updateRegression,
+} from './generators.js';
+import { REGRESS_PER_SEC } from './killer.js';
 import { findInteraction } from './interact.js';
 import { drawHud } from './hud.js';
 import { createKiller, updateKiller, terrorIntensity } from './killer.js';
@@ -99,7 +102,7 @@ function dropPallet(pallet) {
 
 const NO_INPUT = { interactPressed: false };
 const GLOBAL_STINGERS = new Set([
-  'gen-done', 'gen-explode', 'gates-powered', 'gate-open', 'hatch-open', 'pallet-break',
+  'gen-done', 'gen-explode', 'gen-kick', 'gates-powered', 'gate-open', 'hatch-open', 'pallet-break',
 ]);
 
 function tick(dt) {
@@ -140,6 +143,9 @@ function tick(dt) {
       b.goal.target.crew++;
     }
   }
+
+  // Kicked/exploded generators bleed progress until tapped back +5%
+  updateRegression(world.map, dt, REGRESS_PER_SEC);
 
   // Endgame collapse
   if (world.collapseTimer !== null && s.health !== HEALTH.DEAD) {

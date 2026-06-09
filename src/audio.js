@@ -97,6 +97,12 @@ export function playStinger(kind) {
       thump(45, now, 0.45, 1.6);
       tone(140, now + 0.3, 0.2, 1.0);
       break;
+    case 'gen-kick':
+      thump(70, now, 0.3, 0.3);
+      break;
+    case 'swing-miss':
+      tone(180, now, 0.12, 0.15);
+      break;
     case 'pallet-drop':
       thump(85, now, 0.3, 0.25);
       break;
