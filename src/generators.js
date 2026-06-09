@@ -21,6 +21,26 @@ export function crewRate(crew) {
   return Math.max(0.55, 1 - 0.15 * (Math.max(1, crew) - 1));
 }
 
+// Regressing gens (after a killer kick) only stop regressing once +5%
+// has been repaired since the kick.
+export function creditRegressionPause(gen, delta) {
+  if (!gen.regressing) return;
+  gen.repairSinceRegress = (gen.repairSinceRegress || 0) + delta;
+  if (gen.repairSinceRegress >= 0.05) {
+    gen.regressing = false;
+    gen.repairSinceRegress = 0;
+  }
+}
+
+/** Per-tick regression for kicked/exploded gens nobody is touching. */
+export function updateRegression(map, dt, regressPerSec) {
+  for (const g of map.generators) {
+    if (!g.regressing || g.done || (g.crew || 0) > 0) continue;
+    g.progress = Math.max(0, g.progress - regressPerSec * dt);
+    if (g.progress === 0) g.regressing = false;
+  }
+}
+
 export function startRepair(survivor, gen, rng) {
   survivor.action = {
     type: 'repair',
@@ -81,7 +101,9 @@ export function updateRepair(survivor, inp, dt, rng) {
     }
   } else {
     // Normal repair progress (co-op penalty applies)
-    gen.progress += crewRate(gen.crew) * dt / GAME.GEN_REPAIR_SECONDS;
+    const delta = crewRate(gen.crew) * dt / GAME.GEN_REPAIR_SECONDS;
+    gen.progress += delta;
+    creditRegressionPause(gen, delta);
 
     // Maybe spawn a skill check
     if (rng.chance(SKILLCHECK_CHANCE_PER_SEC * dt)) {
@@ -103,6 +125,11 @@ export function updateRepair(survivor, inp, dt, rng) {
 
 function explode(gen, events) {
   gen.progress = Math.max(0, gen.progress - MISS_PENALTY);
+  // Explosions also kick off regression until +5% is repaired back
+  if (gen.progress > 0) {
+    gen.regressing = true;
+    gen.repairSinceRegress = 0;
+  }
   events.push({ type: 'gen-explode', gen });
 }
 

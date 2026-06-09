@@ -66,6 +66,14 @@ function drawEntities(ctx, map) {
     ctx.fillRect(x + 2, y + 2, CELL - 4, CELL - 4);
     ctx.fillStyle = '#3a3014';
     ctx.fillRect(x + 5, y + 5, CELL - 10, CELL - 10);
+
+    // Progress pips above gens that have been started
+    if (!g.done && g.progress > 0.005) {
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(x, y - 5, CELL, 3);
+      ctx.fillStyle = g.regressing ? '#c0392b' : '#caa84e';
+      ctx.fillRect(x, y - 5, CELL * g.progress, 3);
+    }
     if (g.done) {
       // Lit generator glow
       ctx.save();

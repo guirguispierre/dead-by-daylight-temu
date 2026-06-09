@@ -3,7 +3,7 @@
 
 import { SURVIVOR, GAME, METER } from './config.js';
 import { createSurvivor, HEALTH, STANCE, unhookSurvivor } from './survivor.js';
-import { crewRate } from './generators.js';
+import { crewRate, creditRegressionPause } from './generators.js';
 import { collideWithMap } from './map.js';
 import { findPath } from './pathfind.js';
 
@@ -183,7 +183,9 @@ export function updateBot(bot, world, dt) {
       } else {
         bot.moving = false;
         bot.stance = STANCE.WALK;
-        gen.progress += crewRate(gen.crew) * dt / GAME.GEN_REPAIR_SECONDS;
+        const delta = crewRate(gen.crew) * dt / GAME.GEN_REPAIR_SECONDS;
+        gen.progress += delta;
+        creditRegressionPause(gen, delta);
         if (gen.progress >= 1) {
           gen.progress = 1;
           gen.done = true;

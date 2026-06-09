@@ -14,8 +14,22 @@ const LOSE_SIGHT_SECONDS = 3;        // grace before dropping chase
 const SEARCH_SECONDS = 4;            // lingering at last seen position
 const REPATH_INTERVAL = 0.35;
 
-const ATTACK_COOLDOWN = 2.7;         // seconds between swings (weapon wipe)
-const ATTACK_SLOW_SECONDS = 1.0;     // crawl while wiping the blade
+const HIT_COOLDOWN = 2.7;            // weapon wipe after a landed hit
+const HIT_SLOW_MULT = 0.1;           // ~0.46 m/s during the wipe
+const MISS_COOLDOWN = 1.5;           // whiffed swing recovery
+const MISS_SLOW_MULT = 0.2;          // ~0.92 m/s while recovering
+const LUNGE_SPEED_MULT = 1.5;        // 6.9 m/s lunge for a 4.6 m/s killer
+const LUNGE_SECONDS = 0.3;           // lunge commitment window
+const LUNGE_TRIGGER = 2.6;           // start a lunge within this range (meters)
+// Bloodlust: long chases speed the killer up; lost on hit/pallet break/chase end
+const BLOODLUST_TIERS = [            // [chase seconds, bonus m/s]
+  [35, 0.6],
+  [25, 0.4],
+  [15, 0.2],
+];
+const KICK_SECONDS = 1.8;            // damaging a generator
+const KICK_INSTANT_LOSS = 0.05;      // -5% on kick
+export const REGRESS_PER_SEC = 0.25 / 90; // -0.25 charges/s on a 90-charge gen
 const PICKUP_SECONDS = 1.0;
 const CARRY_SPEED_MULT = 0.8;
 const WIGGLE_STUN_SECONDS = 2.5;
@@ -44,6 +58,12 @@ export function createKiller(x, y) {
     targetHook: null,
     breakTimer: 0,
     breakTarget: null,
+    swingSlowMult: 1,        // active cooldown slow (hit vs miss differ)
+    chaseTimer: 0,           // time in current chase, drives bloodlust
+    bloodlust: 0,            // current bonus in m/s
+    lungeTimer: 0,           // >0 while committed to a lunge
+    kickTimer: 0,
+    kickTarget: null,
   };
 }
 
@@ -56,8 +76,20 @@ export function updateKiller(k, world, dt) {
   k.repathTimer -= dt;
   if (k.attackCooldown > 0) k.attackCooldown -= dt;
 
-  // Swinging slows the killer; otherwise full speed
-  k.speedMult = (k.attackCooldown > ATTACK_COOLDOWN - ATTACK_SLOW_SECONDS) ? 0.3 : 1;
+  // Swing recovery slows the killer; otherwise full speed
+  k.speedMult = k.attackCooldown > 0 ? k.swingSlowMult : 1;
+
+  // Bloodlust builds while in chase, fades otherwise
+  if (k.state === 'chase') {
+    k.chaseTimer += dt;
+    k.bloodlust = 0;
+    for (const [t, bonus] of BLOODLUST_TIERS) {
+      if (k.chaseTimer >= t) { k.bloodlust = bonus; break; }
+    }
+  } else {
+    k.chaseTimer = 0;
+    k.bloodlust = 0;
+  }
 
   // A downed survivor takes priority: go pick them up
   if (k.state !== 'pickup' && k.state !== 'carry' && k.state !== 'stunned') {
@@ -94,6 +126,14 @@ export function updateKiller(k, world, dt) {
   switch (k.state) {
     case 'patrol': {
       if (spotted) { enterChase(k, world, spotted); break; }
+      if (k.patrolTarget && !k.patrolTarget.done && arrived(k, k.patrolTarget) &&
+          k.patrolTarget.progress > 0.01 && !k.patrolTarget.regressing) {
+        // Found a worked-on generator: kick it
+        k.state = 'kick';
+        k.kickTimer = KICK_SECONDS;
+        k.kickTarget = k.patrolTarget;
+        break;
+      }
       if (!k.patrolTarget || k.patrolTarget.done || arrived(k, k.patrolTarget)) {
         k.patrolTarget = pickPatrolTarget(k, world);
         k.path = null;
@@ -131,14 +171,48 @@ export function updateKiller(k, world, dt) {
         break;
       }
 
-      // Swing when in lunge range
+      // Lunge: commit to a 0.3s burst at 1.5x speed when close enough
       if (t && chaseable(t)) {
         const d = Math.hypot(t.x - k.x, t.y - k.y);
-        if (d <= KILLER.LUNGE_RANGE && k.attackCooldown <= 0) {
-          k.attackCooldown = ATTACK_COOLDOWN;
-          const event = damageSurvivor(t);
-          if (event) world.events.push({ type: event, who: t });
+
+        if (k.lungeTimer > 0) {
+          k.lungeTimer -= dt;
+          lungeStep(k, map, t, dt);
+          if (Math.hypot(t.x - k.x, t.y - k.y) <= KILLER.LUNGE_RANGE * 0.55) {
+            // Contact: hit lands
+            k.lungeTimer = 0;
+            k.attackCooldown = HIT_COOLDOWN;
+            k.swingSlowMult = HIT_SLOW_MULT;
+            k.chaseTimer = 0; // a hit resets bloodlust
+            const event = damageSurvivor(t);
+            if (event) world.events.push({ type: event, who: t });
+          } else if (k.lungeTimer <= 0) {
+            // Whiffed: shorter but real recovery
+            k.attackCooldown = MISS_COOLDOWN;
+            k.swingSlowMult = MISS_SLOW_MULT;
+            world.events.push({ type: 'swing-miss' });
+          }
+        } else if (d <= LUNGE_TRIGGER * METER && k.attackCooldown <= 0) {
+          k.lungeTimer = LUNGE_SECONDS;
         }
+      }
+      break;
+    }
+
+    case 'kick': {
+      k.kickTimer -= dt;
+      if (k.kickTimer <= 0) {
+        const g = k.kickTarget;
+        if (g && !g.done) {
+          g.progress = Math.max(0, g.progress - KICK_INSTANT_LOSS);
+          g.regressing = g.progress > 0;
+          g.repairSinceRegress = 0;
+          world.events.push({ type: 'gen-kick', gen: g });
+        }
+        k.kickTarget = null;
+        k.state = 'patrol';
+        k.patrolTarget = null;
+        k.path = null;
       }
       break;
     }
@@ -224,6 +298,7 @@ export function updateKiller(k, world, dt) {
       if (k.breakTimer <= 0) {
         if (k.breakTarget) k.breakTarget.state = 'broken';
         k.breakTarget = null;
+        k.chaseTimer = 0; // breaking a pallet resets bloodlust
         world.events.push({ type: 'pallet-break' });
         k.state = k.target && chaseable(k.target) ? 'chase' : 'patrol';
         if (k.target) {
@@ -300,6 +375,20 @@ function pickPatrolTarget(k, world) {
   return pool[Math.floor(world.rng.next() * pool.length)] ?? sorted[0];
 }
 
+// Straight-line burst at the lunge speed, ignoring the path
+function lungeStep(k, map, t, dt) {
+  const d = Math.hypot(t.x - k.x, t.y - k.y);
+  if (d === 0) return;
+  const speed = KILLER.SPEED * LUNGE_SPEED_MULT;
+  const step = Math.min(speed * dt, d);
+  const nx = k.x + ((t.x - k.x) / d) * step;
+  const ny = k.y + ((t.y - k.y) / d) * step;
+  k.facing = Math.atan2(t.y - k.y, t.x - k.x);
+  const resolved = collideWithMap(map, k.x, k.y, nx, ny, k.radius);
+  k.x = resolved.x;
+  k.y = resolved.y;
+}
+
 function nearbyDroppedPallet(k, map) {
   for (const p of map.pallets) {
     if (p.state !== 'dropped') continue;
@@ -342,7 +431,7 @@ function moveAlongPath(k, map, target, dt) {
 
   const wp = k.path[k.pathIndex];
   const d = Math.hypot(wp.x - k.x, wp.y - k.y);
-  const speed = KILLER.SPEED * k.speedMult;
+  const speed = (KILLER.SPEED + k.bloodlust * METER) * k.speedMult;
   const step = Math.min(speed * dt, d);
   const nx = k.x + ((wp.x - k.x) / d) * step;
   const ny = k.y + ((wp.y - k.y) / d) * step;
