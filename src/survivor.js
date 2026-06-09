@@ -19,10 +19,11 @@ const SPRINT_BURST_MULT = 1.5;
 const WIGGLE_SECONDS = 14;         // mash to escape the killer's grip
 const BLEED_OUT_SECONDS = 240;     // downed survivors slowly die
 
-export const HOOK_STAGE_SECONDS = 50;   // per stage; 2 stages then death
+export const HOOK_STAGE_SECONDS = 70;   // per stage; 2 stages then death (DBD: 70s)
 export const SELF_UNHOOK_CHANCE = 0.04; // per attempt, 3 attempts (DBD's 4%)
-export const SELF_UNHOOK_PENALTY = 12;  // seconds of stage 1 lost per failure
-export const SELF_HEAL_SECONDS = 28;    // injured -> healthy, solo
+export const SELF_UNHOOK_PENALTY = 20;  // seconds of stage 1 lost per failure
+export const SELF_HEAL_SECONDS = 45.7;  // Self-Care: 35% of the 16s heal speed
+export const ENDURANCE_SECONDS = 10;    // basekit post-unhook protection
 
 export function createSurvivor(x, y) {
   return {
@@ -36,6 +37,7 @@ export function createSurvivor(x, y) {
 
     health: HEALTH.HEALTHY,
     sprintBurst: 0,     // seconds of post-hit speed boost remaining
+    endurance: 0,       // seconds of one-free-hit protection (post-unhook)
     wiggle: 0,          // 0..1 escape progress while carried
     bleedOut: BLEED_OUT_SECONDS,
     hookState: null,    // {hook, stage, timer, attemptsLeft}
@@ -45,6 +47,13 @@ export function createSurvivor(x, y) {
 
 /** Killer landed a hit. Returns the event type that occurred. */
 export function damageSurvivor(s) {
+  // Endurance (post-unhook protection) eats one hit
+  if (s.endurance > 0 &&
+      (s.health === HEALTH.HEALTHY || s.health === HEALTH.INJURED)) {
+    s.endurance = 0;
+    s.sprintBurst = SPRINT_BURST_SECONDS;
+    return 'endurance-hit';
+  }
   if (s.health === HEALTH.HEALTHY) {
     s.health = HEALTH.INJURED;
     s.sprintBurst = SPRINT_BURST_SECONDS;
@@ -86,6 +95,7 @@ export function unhookSurvivor(s) {
   s.hookState = null;
   s.health = HEALTH.INJURED;
   s.sprintBurst = SPRINT_BURST_SECONDS;
+  s.endurance = ENDURANCE_SECONDS; // basekit protection off the hook
 }
 
 /**
@@ -138,6 +148,7 @@ export function updateHeal(s, dt) {
  */
 export function updateSurvivor(s, inp, dt, collide) {
   if (s.sprintBurst > 0) s.sprintBurst -= dt;
+  if (s.endurance > 0) s.endurance -= dt;
 
   let dx = inp.moveX;
   let dy = inp.moveY;

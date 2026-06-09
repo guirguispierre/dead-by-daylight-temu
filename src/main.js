@@ -57,10 +57,10 @@ const world = {
   collide: (x, y, radius) => collideWithMap(map, survivor.x, survivor.y, x, y, radius),
 };
 
-const GATE_OPEN_SECONDS = 15;
+const GATE_OPEN_SECONDS = 20; // matches DBD
 const COLLAPSE_SECONDS = 120;
-const UNHOOK_SECONDS = 1.5;
-const HEAL_OTHER_SECONDS = 8;
+const UNHOOK_SECONDS = 1;
+const HEAL_OTHER_SECONDS = 16; // altruistic heal
 
 // --- Fixed-timestep loop ---
 let last = performance.now();
@@ -79,8 +79,9 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 
-const WIGGLE_FILL_SECONDS = 14;
-const VAULT_SECONDS = 0.5;
+const WIGGLE_FILL_SECONDS = 16; // matches DBD wiggle
+const FAST_VAULT_SECONDS = 0.5;  // sprinting vault
+const MED_VAULT_SECONDS = 0.9;   // standing vault
 const PALLET_STUN_RANGE = 1.8 * 16; // pallet smacks the killer within this range
 
 function dropPallet(pallet) {
@@ -127,6 +128,17 @@ function tick(dt) {
   if (!world.map.hatch.open && world.bots.every(b => b.health === HEALTH.DEAD)) {
     world.map.hatch.open = true;
     world.events.push({ type: 'hatch-open' });
+  }
+
+  // Count repairers per generator (for the co-op efficiency penalty)
+  for (const g of world.map.generators) g.crew = 0;
+  if (s.action && s.action.type === 'repair') s.action.gen.crew++;
+  for (const b of world.bots) {
+    if ((b.health === HEALTH.HEALTHY || b.health === HEALTH.INJURED) &&
+        b.goal && b.goal.kind === 'repair' && !b.goal.target.done &&
+        Math.hypot(b.goal.target.x - b.x, b.goal.target.y - b.y) <= 2.2 * 16) {
+      b.goal.target.crew++;
+    }
   }
 
   // Endgame collapse
@@ -244,7 +256,9 @@ function tick(dt) {
           } else if (interaction.type === 'vault') {
             const landing = vaultLanding(world.map, interaction.target, s.x, s.y);
             if (landing) {
-              s.action = { type: 'vault', timer: VAULT_SECONDS, landing };
+              // Fast vault when sprinting into it, medium otherwise
+              const duration = s.stance === STANCE.RUN ? FAST_VAULT_SECONDS : MED_VAULT_SECONDS;
+              s.action = { type: 'vault', timer: duration, landing };
               world.events.push({ type: 'vault' });
             }
           }

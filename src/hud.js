@@ -153,8 +153,8 @@ function drawActionProgress(ctx, world, w, h) {
   let progress = null;
   if (s.action.type === 'repair') progress = s.action.gen.progress;
   else if (s.action.type === 'open-gate') progress = s.action.gate.progress;
-  else if (s.action.type === 'unhook') progress = 1 - s.action.timer / 1.5;
-  else if (s.action.type === 'heal-other') progress = 1 - s.action.timer / 8;
+  else if (s.action.type === 'unhook') progress = 1 - s.action.timer / 1;
+  else if (s.action.type === 'heal-other') progress = 1 - s.action.timer / 16;
   if (progress === null) return;
 
   ctx.save();

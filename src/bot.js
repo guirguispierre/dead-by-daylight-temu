@@ -3,18 +3,18 @@
 
 import { SURVIVOR, GAME, METER } from './config.js';
 import { createSurvivor, HEALTH, STANCE, unhookSurvivor } from './survivor.js';
+import { crewRate } from './generators.js';
 import { collideWithMap } from './map.js';
 import { findPath } from './pathfind.js';
 
 const FLEE_RANGE = 13 * METER;      // killer this close (with LOS) => run away
 const FLEE_DISTANCE = 22 * METER;   // how far to run before settling
-const REPAIR_RATE = 0.85;           // bots repair a bit slower than the player
 // Work ranges are 2.2m because paths end at a solid target's *neighbor*
 // cell, which can be up to ~1.7m from the target's center.
 const UNHOOK_RANGE = 2.2 * METER;
-const UNHOOK_SECONDS = 1.5;
+const UNHOOK_SECONDS = 1;     // matches DBD's unhook action
 const HEAL_RANGE = 2.2 * METER;
-const HEAL_SECONDS = 10;
+const HEAL_SECONDS = 16;      // altruistic heal duration
 const REPATH_INTERVAL = 0.5;
 const GEN_WORK_RANGE = 2.2 * METER;
 
@@ -42,7 +42,7 @@ export function updateBot(bot, world, dt) {
     case HEALTH.DEAD:
       return;
     case HEALTH.CARRIED:
-      bot.wiggle += dt / 14;
+      bot.wiggle += dt / 16;
       return;
     case HEALTH.HOOKED:
       // Hook timers for bots are advanced by updateHookedBot in main
@@ -57,6 +57,7 @@ export function updateBot(bot, world, dt) {
   }
 
   if (bot.sprintBurst > 0) bot.sprintBurst -= dt;
+  if (bot.endurance > 0) bot.endurance -= dt;
 
   // --- Decide goal (priority order) ---
   const threat = isThreatened(bot, k, world.map);
@@ -182,7 +183,7 @@ export function updateBot(bot, world, dt) {
       } else {
         bot.moving = false;
         bot.stance = STANCE.WALK;
-        gen.progress += REPAIR_RATE * dt / GAME.GEN_REPAIR_SECONDS;
+        gen.progress += crewRate(gen.crew) * dt / GAME.GEN_REPAIR_SECONDS;
         if (gen.progress >= 1) {
           gen.progress = 1;
           gen.done = true;
@@ -200,7 +201,7 @@ export function updateBot(bot, world, dt) {
       if (d > 2.2 * METER) {
         moveToward(bot, world, gate, dt, true);
       } else {
-        gate.progress += dt / 15;
+        gate.progress += dt / 20; // 20s gate opening, like DBD
         if (gate.progress >= 1) {
           gate.progress = 1;
           gate.open = true;
