@@ -29,6 +29,36 @@ function thump(freq, when, gain, duration) {
   osc.stop(when + duration);
 }
 
+// Chase music: a tense pulsing layer that fades in while the killer is
+// actively chasing the player and out when the chase ends.
+let chaseOsc = null;
+let chaseGain = null;
+let chasePulse = 0;
+
+export function updateChaseMusic(active, dt) {
+  if (!ctx || ctx.state !== 'running') return;
+  if (active && !chaseOsc) {
+    chaseOsc = ctx.createOscillator();
+    chaseGain = ctx.createGain();
+    chaseOsc.type = 'sawtooth';
+    chaseOsc.frequency.value = 65;
+    chaseGain.gain.value = 0;
+    chaseOsc.connect(chaseGain).connect(ctx.destination);
+    chaseOsc.start();
+  }
+  if (!chaseOsc) return;
+
+  const now = ctx.currentTime;
+  if (active) {
+    chasePulse += dt;
+    // Pulse between two pitches for urgency
+    chaseOsc.frequency.setTargetAtTime(chasePulse % 0.5 < 0.25 ? 65 : 73, now, 0.03);
+    chaseGain.gain.setTargetAtTime(0.05, now, 0.4);
+  } else {
+    chaseGain.gain.setTargetAtTime(0, now, 0.6);
+  }
+}
+
 /**
  * Call every tick with terror intensity 0..1. Schedules lub-dub beats whose
  * rate and volume scale with how close the killer is.

@@ -16,7 +16,7 @@ import { REGRESS_PER_SEC } from './killer.js';
 import { findInteraction } from './interact.js';
 import { drawHud } from './hud.js';
 import { createKiller, updateKiller, terrorIntensity } from './killer.js';
-import { updateHeartbeat, playStinger } from './audio.js';
+import { updateHeartbeat, updateChaseMusic, playStinger } from './audio.js';
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
@@ -296,6 +296,7 @@ function tick(dt) {
 
   // Terror radius heartbeat + event stingers (skip bot-personal events)
   updateHeartbeat(terrorIntensity(world.killer, s), dt);
+  updateChaseMusic(world.killer.state === 'chase' && world.killer.target === s, dt);
   for (const e of world.events) {
     if (!e.who || e.who === s || GLOBAL_STINGERS.has(e.type)) playStinger(e.type);
   }
@@ -478,6 +479,18 @@ function drawScratches() {
 }
 
 function drawKiller(k) {
+  // Red stain: the killer's gaze projected ahead (lets you juke at loops)
+  const stainLen = 5 * 16;
+  const grad = ctx.createRadialGradient(k.x, k.y, k.radius, k.x, k.y, stainLen);
+  grad.addColorStop(0, 'rgba(220, 30, 40, 0.30)');
+  grad.addColorStop(1, 'rgba(220, 30, 40, 0)');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.moveTo(k.x, k.y);
+  ctx.arc(k.x, k.y, stainLen, k.facing - 0.42, k.facing + 0.42);
+  ctx.closePath();
+  ctx.fill();
+
   ctx.fillStyle = COLORS.KILLER;
   ctx.beginPath();
   ctx.arc(k.x, k.y, k.radius, 0, Math.PI * 2);

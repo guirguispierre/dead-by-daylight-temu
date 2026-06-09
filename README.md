@@ -42,6 +42,18 @@ open index.html
 | Enter | Start |
 | R | Restart after the trial ends |
 
+## Fidelity
+
+Mechanics are tuned to publicly documented values from the real game:
+
+- Speeds: survivor 4.0 m/s run / 2.26 walk / 1.13 crouch / 0.7 crawl; killer 4.6 m/s, 3.68 carrying
+- Generators: 90s solo, −15% per extra repairer co-op penalty; killer kick = 1.8s, −5%, then −0.25 c/s regression until +5% repaired back
+- Skill checks: 8%/s repairing, 15%/s healing; great +1% (repair) / +3% (heal); miss = −10%, explosion noise, 3s stall
+- Chases: bloodlust +0.2/0.4/0.6 m/s at 15/25/35s; lunge 6.9 m/s for 0.3s; hit = 2.7s weapon wipe, whiff = 1.5s recovery
+- Hooks: two 70s stages; 4% self-unhook ×3 (−20s per fail); struggle-phase skill checks at −20s per miss; 3rd hook = sacrifice; basekit 10s endurance after an unhook
+- Tracking: scratch marks linger 10s, injured grunts audible ~5m, running heard ~8m through walls, red stain shows the killer's gaze
+- Misc: 16s heals (Self-Care 45.7s), 20s exit gates, 16s wiggle, fast/medium vaults (0.5s/0.9s), hatch for the last survivor standing
+
 ## How it's built
 
 - `src/map.js` — seeded procedural maps from prefab loop tiles (killer shack
