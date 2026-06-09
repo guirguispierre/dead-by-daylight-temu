@@ -1,6 +1,8 @@
-import { GAME, COLORS, METER } from './config.js';
+import { GAME, COLORS } from './config.js';
 import { input } from './input.js';
 import { createSurvivor, updateSurvivor, STANCE } from './survivor.js';
+import { generateMap, collideWithMap } from './map.js';
+import { drawMap } from './render.js';
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
@@ -12,12 +14,15 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
-// --- World state (grows as features land) ---
+// --- World state ---
+const map = generateMap((Math.random() * 2 ** 32) >>> 0);
+const survivor = createSurvivor(map.survivorSpawn.x, map.survivorSpawn.y);
+
 const world = {
-  survivor: createSurvivor(0, 0),
-  camera: { x: 0, y: 0 },
-  // No map yet: free movement on an open floor
-  collide: (x, y) => ({ x, y }),
+  map,
+  survivor,
+  camera: { x: survivor.x, y: survivor.y },
+  collide: (x, y, radius) => collideWithMap(map, survivor.x, survivor.y, x, y, radius),
 };
 
 // --- Fixed-timestep loop ---
@@ -54,43 +59,26 @@ function render() {
   const h = canvas.height;
   const cam = world.camera;
 
-  ctx.fillStyle = COLORS.FLOOR;
+  ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, w, h);
 
   ctx.save();
-  ctx.translate(w / 2 - cam.x, h / 2 - cam.y);
+  ctx.translate(Math.round(w / 2 - cam.x), Math.round(h / 2 - cam.y));
 
-  drawFloorGrid(w, h, cam);
+  drawMap(ctx, world.map, cam.x - w / 2, cam.y - h / 2, w, h);
   drawSurvivor(world.survivor);
 
   ctx.restore();
 }
 
-function drawFloorGrid(w, h, cam) {
-  // Subtle checkerboard so motion is visible before the map exists
-  const tile = 4 * METER;
-  const x0 = Math.floor((cam.x - w / 2) / tile) * tile;
-  const y0 = Math.floor((cam.y - h / 2) / tile) * tile;
-  ctx.fillStyle = COLORS.FLOOR_ALT;
-  for (let y = y0; y < cam.y + h / 2 + tile; y += tile) {
-    for (let x = x0; x < cam.x + w / 2 + tile; x += tile) {
-      if (((x / tile + y / tile) | 0) % 2 === 0) {
-        ctx.fillRect(x, y, tile, tile);
-      }
-    }
-  }
-}
-
 function drawSurvivor(s) {
   const r = s.stance === STANCE.CROUCH ? s.radius * 0.75 : s.radius;
 
-  // Body
   ctx.fillStyle = COLORS.SURVIVOR;
   ctx.beginPath();
   ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
   ctx.fill();
 
-  // Facing indicator
   ctx.strokeStyle = '#fff';
   ctx.lineWidth = 2;
   ctx.beginPath();
