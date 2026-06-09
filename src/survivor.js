@@ -11,6 +11,7 @@ export function createSurvivor(x, y) {
     facing: 0,          // radians, for rendering
     stance: STANCE.WALK,
     moving: false,
+    action: null,       // current interaction, e.g. {type:'repair', gen}
   };
 }
 
