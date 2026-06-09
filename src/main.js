@@ -3,7 +3,7 @@ import { input } from './input.js';
 import {
   createSurvivor, updateSurvivor, updateHooked, updateHeal, STANCE, HEALTH,
 } from './survivor.js';
-import { generateMap, collideWithMap } from './map.js';
+import { generateMap, collideWithMap, vaultLanding } from './map.js';
 import { drawMap } from './render.js';
 import { createRng } from './rng.js';
 import { startRepair, updateRepair, cancelAction } from './generators.js';
@@ -58,6 +58,21 @@ function frame(now) {
 }
 
 const WIGGLE_FILL_SECONDS = 14;
+const VAULT_SECONDS = 0.5;
+const PALLET_STUN_RANGE = 1.8 * 16; // pallet smacks the killer within this range
+
+function dropPallet(pallet) {
+  pallet.state = 'dropped';
+  world.events.push({ type: 'pallet-drop' });
+  const k = world.killer;
+  if (Math.hypot(k.x - pallet.x, k.y - pallet.y) < PALLET_STUN_RANGE &&
+      k.state !== 'carry') {
+    k.state = 'stunned';
+    k.stunTimer = 2.0;
+    k.path = null;
+    world.events.push({ type: 'pallet-stun' });
+  }
+}
 
 function tick(dt) {
   const s = world.survivor;
@@ -90,8 +105,16 @@ function tick(dt) {
     default: {
       // healthy / injured / downed
       if (s.action) {
-        // Any movement input breaks the interaction
-        if (input.moveX !== 0 || input.moveY !== 0) {
+        if (s.action.type === 'vault') {
+          // Committed: can't be cancelled
+          s.action.timer -= dt;
+          if (s.action.timer <= 0) {
+            s.x = s.action.landing.x;
+            s.y = s.action.landing.y;
+            s.action = null;
+          }
+        } else if (input.moveX !== 0 || input.moveY !== 0) {
+          // Any movement input breaks other interactions
           cancelAction(s);
         } else if (s.action.type === 'repair') {
           world.events.push(...updateRepair(s, input, dt, world.rng));
@@ -118,6 +141,14 @@ function tick(dt) {
             startRepair(s, interaction.target, world.rng);
           } else if (interaction.type === 'heal') {
             s.action = { type: 'heal' };
+          } else if (interaction.type === 'drop-pallet') {
+            dropPallet(interaction.target);
+          } else if (interaction.type === 'vault') {
+            const landing = vaultLanding(world.map, interaction.target, s.x, s.y);
+            if (landing) {
+              s.action = { type: 'vault', timer: VAULT_SECONDS, landing };
+              world.events.push({ type: 'vault' });
+            }
           }
           world.prompt = null;
         }

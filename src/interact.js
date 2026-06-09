@@ -1,15 +1,44 @@
 // Finds the closest available interaction for the survivor.
+// Priority: pallets (drop/vault) > window vault > generator > self-heal,
+// so mid-chase inputs always favor the escape move.
 
 import { CELL } from './map.js';
 
 const GEN_RANGE = 1.6 * CELL;
+const PALLET_RANGE = 1.4 * CELL;
+const WINDOW_RANGE = 1.4 * CELL;
 
 export function findInteraction(world) {
   const s = world.survivor;
 
-  // Generators
+  // Pallets: drop an upright one, vault a dropped one
   let best = null;
   let bestDist = Infinity;
+  for (const p of world.map.pallets) {
+    if (p.state === 'broken') continue;
+    const d = Math.hypot(p.x - s.x, p.y - s.y);
+    if (d < PALLET_RANGE && d < bestDist) {
+      best = p.state === 'upright'
+        ? { type: 'drop-pallet', target: p, label: 'Drop pallet' }
+        : { type: 'vault', target: p, label: 'Vault pallet' };
+      bestDist = d;
+    }
+  }
+  if (best) return best;
+
+  // Windows
+  bestDist = Infinity;
+  for (const wd of world.map.windows) {
+    const d = Math.hypot(wd.x - s.x, wd.y - s.y);
+    if (d < WINDOW_RANGE && d < bestDist) {
+      best = { type: 'vault', target: wd, label: 'Vault window' };
+      bestDist = d;
+    }
+  }
+  if (best) return best;
+
+  // Generators
+  bestDist = Infinity;
   for (const g of world.map.generators) {
     if (g.done) continue;
     const d = Math.hypot(g.x - s.x, g.y - s.y);
@@ -18,11 +47,12 @@ export function findInteraction(world) {
       bestDist = d;
     }
   }
+  if (best) return best;
 
   // Nothing nearby and hurt? Patch yourself up.
-  if (!best && s.health === 'injured') {
-    best = { type: 'heal', target: null, label: 'Self-heal' };
+  if (s.health === 'injured') {
+    return { type: 'heal', target: null, label: 'Self-heal' };
   }
 
-  return best;
+  return null;
 }

@@ -146,7 +146,17 @@ export function generateMap(seed) {
         const gate = map.gates.find(g => g.cells.some(c => c.cx === cx && c.cy === cy));
         return !(gate && gate.open);
       }
-      return t !== T.FLOOR;
+      if (t === T.FLOOR) {
+        const p = map.palletAt(cx, cy);
+        return !!(p && p.state === 'dropped');
+      }
+      return true;
+    },
+    palletAt(cx, cy) {
+      return map.pallets.find(p => p.cx === cx && p.cy === cy) ?? null;
+    },
+    windowAt(cx, cy) {
+      return map.windows.find(wd => wd.cx === cx && wd.cy === cy) ?? null;
     },
   };
 
@@ -314,6 +324,24 @@ export function collideWithMap(map, fromX, fromY, x, y, radius) {
     if (!pushed) break;
   }
   return { x: px, y: py };
+}
+
+/**
+ * Landing spot for vaulting over the cell at (cell.cx, cell.cy) from world
+ * position (fromX, fromY): the open 4-neighbor most opposite the approach.
+ */
+export function vaultLanding(map, cell, fromX, fromY) {
+  let best = null;
+  let bestDot = Infinity;
+  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    if (map.isSolid(cell.cx + dx, cell.cy + dy)) continue;
+    const dot = dx * (fromX - cell.x) + dy * (fromY - cell.y);
+    if (dot < bestDot) {
+      bestDot = dot;
+      best = { x: (cell.cx + dx + 0.5) * CELL, y: (cell.cy + dy + 0.5) * CELL };
+    }
+  }
+  return best;
 }
 
 /** Line of sight between two world points, sampled against solid cells. */
