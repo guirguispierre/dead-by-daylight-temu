@@ -17,13 +17,16 @@ import { findInteraction } from './interact.js';
 import { drawHud } from './hud.js';
 import { createKiller, updateKiller, terrorIntensity } from './killer.js';
 import { updateHeartbeat, updateChaseMusic, playStinger } from './audio.js';
+import { init3d, update3d, resize3d } from './render3d.js';
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
+const canvas3d = document.getElementById('game3d');
 
 function resize() {
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
+  resize3d(window.innerWidth, window.innerHeight);
 }
 window.addEventListener('resize', resize);
 resize();
@@ -100,6 +103,57 @@ function dropPallet(pallet) {
     k.path = null;
     world.events.push({ type: 'pallet-stun' });
   }
+}
+
+// --- 3D view state ---
+world.viewMode = '3d';                 // '3d' third-person | '2d' tactical
+let camYaw = survivor.facing || 0;     // third-person camera heading
+let has3d = false;
+try {
+  init3d(canvas3d, map);
+  has3d = true;
+} catch (err) {
+  // No WebGL available: fall back to the 2D tactical view
+  console.warn('3D unavailable, falling back to 2D:', err);
+  world.viewMode = '2d';
+  canvas3d.style.display = 'none';
+}
+
+canvas.addEventListener('click', () => {
+  if (world.viewMode === '3d' && document.pointerLockElement !== canvas) {
+    canvas.requestPointerLock();
+  }
+});
+window.addEventListener('mousemove', (e) => {
+  if (document.pointerLockElement === canvas) {
+    camYaw += e.movementX * 0.0025;
+  }
+});
+
+// In 3D mode WASD is camera-relative (W runs where the camera looks)
+function effectiveInput() {
+  if (world.viewMode !== '3d') return input;
+  const mx = input.moveX;
+  const my = input.moveY;
+  if (mx === 0 && my === 0) return input;
+  const fx = Math.cos(camYaw);
+  const fy = Math.sin(camYaw);
+  // forward = (fx, fy); screen-right = forward x up = (-fy, fx)
+  const worldX = fx * -my + -fy * mx;
+  const worldY = fy * -my + fx * mx;
+  return new Proxy(input, {
+    get(t, prop) {
+      if (prop === 'moveX') return worldX;
+      if (prop === 'moveY') return worldY;
+      return t[prop];
+    },
+  });
+}
+
+// Debug/testing: ?start skips the title screen
+if (typeof location !== 'undefined' && location.search &&
+    new URLSearchParams(location.search).has('start')) {
+  world.started = true;
 }
 
 const NO_INPUT = { interactPressed: false };
@@ -223,7 +277,7 @@ function tick(dt) {
           }
         }
       } else {
-        updateSurvivor(s, input, dt, world.collide);
+        updateSurvivor(s, effectiveInput(), dt, world.collide);
 
         if (s.health === HEALTH.DOWNED) {
           if (s.bleedOut <= 0) {
@@ -293,6 +347,15 @@ function tick(dt) {
   }
 
   updateKiller(world.killer, world, dt);
+
+  // V toggles between 3D third-person and 2D tactical view
+  if (input.wasPressed('KeyV') && has3d) {
+    world.viewMode = world.viewMode === '3d' ? '2d' : '3d';
+    canvas3d.style.display = world.viewMode === '3d' ? 'block' : 'none';
+    if (world.viewMode === '2d' && document.pointerLockElement === canvas) {
+      document.exitPointerLock();
+    }
+  }
 
   // Terror radius heartbeat + event stingers (skip bot-personal events)
   updateHeartbeat(terrorIntensity(world.killer, s), dt);
@@ -390,29 +453,35 @@ function escape() {
 function render() {
   const w = canvas.width;
   const h = canvas.height;
-  const cam = world.camera;
 
-  ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, w, h);
+  if (world.viewMode === '3d') {
+    // WebGL canvas draws the world; this canvas becomes the HUD layer
+    ctx.clearRect(0, 0, w, h);
+    update3d(world, camYaw);
+  } else {
+    const cam = world.camera;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, w, h);
 
-  ctx.save();
-  ctx.translate(Math.round(w / 2 - cam.x), Math.round(h / 2 - cam.y));
+    ctx.save();
+    ctx.translate(Math.round(w / 2 - cam.x), Math.round(h / 2 - cam.y));
 
-  drawMap(ctx, world.map, cam.x - w / 2, cam.y - h / 2, w, h);
-  drawScratches();
-  drawKiller(world.killer);
-  for (const b of world.bots) {
-    drawSurvivor(b, b.color);
-    if (b.health !== HEALTH.DEAD) {
-      ctx.font = '600 9px system-ui, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillStyle = 'rgba(232, 227, 208, 0.8)';
-      ctx.fillText(b.name, b.x, b.y - 12);
+    drawMap(ctx, world.map, cam.x - w / 2, cam.y - h / 2, w, h);
+    drawScratches();
+    drawKiller(world.killer);
+    for (const b of world.bots) {
+      drawSurvivor(b, b.color);
+      if (b.health !== HEALTH.DEAD) {
+        ctx.font = '600 9px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(232, 227, 208, 0.8)';
+        ctx.fillText(b.name, b.x, b.y - 12);
+      }
     }
-  }
-  drawSurvivor(world.survivor, COLORS.SURVIVOR);
+    drawSurvivor(world.survivor, COLORS.SURVIVOR);
 
-  ctx.restore();
+    ctx.restore();
+  }
 
   drawTerrorVignette(w, h);
   drawHud(ctx, world, w, h);
@@ -435,7 +504,8 @@ function drawMenuOverlay(w, h) {
   ctx.font = '400 17px system-ui, sans-serif';
   const lines = [
     'Repair 5 generators with your team, then escape through an exit gate.',
-    'WASD move · Shift run · Ctrl sneak · Space interact / skill checks',
+    'WASD move · mouse to look (click to capture) · Shift run · Ctrl sneak',
+    'Space interact / skill checks · V toggles 3D / tactical view',
     'The Killer hears you run. Drop pallets on its head. Good luck.',
     '',
     'Press Enter to enter the fog',

@@ -10,7 +10,15 @@ through the exit gates — or the hatch, if you're the last one standing.
 
 ## Play
 
-Open `index.html` in a browser. That's it. No build step, no install.
+Serve the folder and open it in a browser (ES modules need http):
+
+```
+python3 -m http.server 8423   # then visit http://localhost:8423
+```
+
+The game is **3D** (third-person, WebGL via a vendored three.js) with a 2D
+tactical view on **V**. If WebGL isn't available it falls back to 2D
+automatically.
 
 ```
 open index.html
@@ -35,7 +43,9 @@ open index.html
 
 | Key | Action |
 |-----|--------|
-| WASD / arrows | Move (mash A/D to wiggle when carried) |
+| WASD / arrows | Move, camera-relative in 3D (mash A/D to wiggle when carried) |
+| Mouse | Look around (click the game once to capture the pointer) |
+| V | Toggle 3D third-person / 2D tactical view |
 | Shift | Run (the killer hears you) |
 | Ctrl | Sneak (crouch — much harder to spot) |
 | Space | Interact: repair / skill check / vault / drop pallet / unhook / heal / open gate / hook escape attempt |
@@ -62,6 +72,8 @@ Mechanics are tuned to publicly documented values from the real game:
   patrol → chase → search, plus pickup / carry / break / stunned
 - `src/bot.js` — teammate AI: repair, flee to pallets, slam them on the
   killer, rescue, heal, leave through the gates
+- `src/render3d.js` — three.js third-person renderer mirroring sim state
+  (the 2D simulation stays authoritative; x,y maps to x,z)
 - `src/generators.js`, `src/survivor.js`, `src/interact.js`, `src/hud.js`,
   `src/audio.js` (WebAudio heartbeat + stingers), `src/render.js`
 
