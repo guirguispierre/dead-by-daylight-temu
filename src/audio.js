@@ -117,6 +117,23 @@ export function playStinger(kind) {
       tone(550, now, 0.15, 0.2);
       tone(740, now + 0.15, 0.15, 0.3);
       break;
+    case 'gates-powered':
+      tone(392, now, 0.18, 0.3);
+      tone(523, now + 0.2, 0.18, 0.3);
+      tone(659, now + 0.4, 0.18, 0.5);
+      break;
+    case 'gate-open':
+      thump(80, now, 0.3, 0.6);
+      tone(330, now + 0.3, 0.15, 0.4);
+      break;
+    case 'hatch-open':
+      tone(196, now, 0.15, 0.8);
+      break;
+    case 'escaped':
+      tone(523, now, 0.2, 0.25);
+      tone(659, now + 0.18, 0.2, 0.25);
+      tone(784, now + 0.36, 0.2, 0.5);
+      break;
   }
 }
 

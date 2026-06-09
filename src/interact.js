@@ -37,6 +37,20 @@ export function findInteraction(world) {
   }
   if (best) return best;
 
+  // Exit gate switches (only once powered)
+  if (world.gatesPowered) {
+    bestDist = Infinity;
+    for (const g of world.map.gates) {
+      if (g.open) continue;
+      const d = Math.hypot(g.x - s.x, g.y - s.y);
+      if (d < 2.2 * CELL && d < bestDist) {
+        best = { type: 'open-gate', target: g, label: 'Open exit gate' };
+        bestDist = d;
+      }
+    }
+    if (best) return best;
+  }
+
   // Generators
   bestDist = Infinity;
   for (const g of world.map.generators) {

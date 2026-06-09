@@ -77,15 +77,30 @@ function drawGenCounter(ctx, world, w, h) {
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
 
-  // Little generator icon
   const x = 24;
   const y = h - 40;
-  ctx.fillStyle = '#caa84e';
-  ctx.fillRect(x, y - 10, 20, 20);
-  ctx.fillStyle = '#3a3014';
-  ctx.fillRect(x + 4, y - 6, 12, 12);
-  ctx.fillStyle = '#e8e3d0';
-  ctx.fillText(`${remaining}`, x + 30, y + 1);
+  if (world.gatesPowered) {
+    ctx.fillStyle = '#9bc995';
+    ctx.font = '600 18px system-ui, sans-serif';
+    ctx.fillText('EXIT GATES POWERED — open a gate and run', x, y + 1);
+  } else {
+    // Little generator icon
+    ctx.fillStyle = '#caa84e';
+    ctx.fillRect(x, y - 10, 20, 20);
+    ctx.fillStyle = '#3a3014';
+    ctx.fillRect(x + 4, y - 6, 12, 12);
+    ctx.fillStyle = '#e8e3d0';
+    ctx.fillText(`${remaining}`, x + 30, y + 1);
+  }
+
+  // Endgame collapse countdown
+  if (world.collapseTimer !== null && world.collapseTimer > 0) {
+    bar(ctx, w / 2 - 160, 18, 320, 8, world.collapseTimer / 120, '#a32330');
+    ctx.fillStyle = '#e8e3d0';
+    ctx.font = '600 13px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('ENDGAME COLLAPSE', w / 2, 42);
+  }
   ctx.restore();
 }
 
@@ -106,8 +121,11 @@ function drawPrompt(ctx, world, w, h) {
 
 function drawActionProgress(ctx, world, w, h) {
   const s = world.survivor;
-  if (!s.action || s.action.type !== 'repair') return;
-  const progress = s.action.gen.progress;
+  if (!s.action) return;
+  let progress = null;
+  if (s.action.type === 'repair') progress = s.action.gen.progress;
+  else if (s.action.type === 'open-gate') progress = s.action.gate.progress;
+  if (progress === null) return;
 
   ctx.save();
   const bw = 240;

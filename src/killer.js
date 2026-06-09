@@ -251,7 +251,14 @@ function detect(k, s, map) {
 }
 
 function pickPatrolGen(k, world) {
-  const candidates = world.map.generators.filter(g => !g.done);
+  // Endgame: guard the exits instead of dead generators
+  let candidates;
+  if (world.gatesPowered) {
+    candidates = world.map.gates.slice();
+    if (world.map.hatch && world.map.hatch.open) candidates.push(world.map.hatch);
+  } else {
+    candidates = world.map.generators.filter(g => !g.done);
+  }
   if (candidates.length === 0) return null;
   // Prefer gens away from the current position so the killer roams
   const sorted = candidates.slice().sort((a, b) =>

@@ -6,7 +6,7 @@ import {
 import { generateMap, collideWithMap, vaultLanding } from './map.js';
 import { drawMap } from './render.js';
 import { createRng } from './rng.js';
-import { startRepair, updateRepair, cancelAction } from './generators.js';
+import { startRepair, updateRepair, cancelAction, generatorsDone } from './generators.js';
 import { findInteraction } from './interact.js';
 import { drawHud } from './hud.js';
 import { createKiller, updateKiller, terrorIntensity } from './killer.js';
@@ -37,8 +37,15 @@ const world = {
   camera: { x: survivor.x, y: survivor.y },
   prompt: null,
   events: [],   // transient per-tick events (gen explosions, etc.)
+  gatesPowered: false,
+  collapseTimer: null,  // endgame collapse countdown, starts when a gate opens
+  escaped: false,
   collide: (x, y, radius) => collideWithMap(map, survivor.x, survivor.y, x, y, radius),
 };
+
+const GATE_OPEN_SECONDS = 15;
+const COLLAPSE_SECONDS = 120;
+const HATCH_GENS = 3;       // hatch opens at this many gens done (solo rule)
 
 // --- Fixed-timestep loop ---
 let last = performance.now();
@@ -78,6 +85,32 @@ function tick(dt) {
   const s = world.survivor;
   world.events.length = 0;
   world.prompt = null;
+
+  if (world.escaped) {
+    if (input.wasPressed('KeyR')) location.reload();
+    input.endFrame();
+    return;
+  }
+
+  // Powering milestones
+  if (!world.gatesPowered && generatorsDone(world.map) >= GAME.GENERATORS_REQUIRED) {
+    world.gatesPowered = true;
+    world.events.push({ type: 'gates-powered' });
+  }
+  if (!world.map.hatch.open && generatorsDone(world.map) >= HATCH_GENS) {
+    world.map.hatch.open = true;
+    world.events.push({ type: 'hatch-open' });
+  }
+
+  // Endgame collapse
+  if (world.collapseTimer !== null && s.health !== HEALTH.DEAD) {
+    world.collapseTimer -= dt;
+    if (world.collapseTimer <= 0) {
+      s.health = HEALTH.DEAD;
+      world.deathCause = 'collapse';
+      world.events.push({ type: 'sacrificed' });
+    }
+  }
 
   switch (s.health) {
     case HEALTH.DEAD: {
@@ -121,6 +154,16 @@ function tick(dt) {
         } else if (s.action.type === 'heal') {
           const ev = updateHeal(s, dt);
           if (ev) world.events.push({ type: ev });
+        } else if (s.action.type === 'open-gate') {
+          const gate = s.action.gate;
+          gate.progress += dt / GATE_OPEN_SECONDS;
+          if (gate.progress >= 1) {
+            gate.progress = 1;
+            gate.open = true;
+            s.action = null;
+            world.events.push({ type: 'gate-open' });
+            if (world.collapseTimer === null) world.collapseTimer = COLLAPSE_SECONDS;
+          }
         }
       } else {
         updateSurvivor(s, input, dt, world.collide);
@@ -141,6 +184,8 @@ function tick(dt) {
             startRepair(s, interaction.target, world.rng);
           } else if (interaction.type === 'heal') {
             s.action = { type: 'heal' };
+          } else if (interaction.type === 'open-gate') {
+            s.action = { type: 'open-gate', gate: interaction.target };
           } else if (interaction.type === 'drop-pallet') {
             dropPallet(interaction.target);
           } else if (interaction.type === 'vault') {
@@ -156,6 +201,8 @@ function tick(dt) {
     }
   }
 
+  checkEscape(s);
+
   updateKiller(world.killer, world, dt);
 
   // Terror radius heartbeat + event stingers
@@ -168,6 +215,32 @@ function tick(dt) {
   cam.y += (s.y - cam.y) * 0.12;
 
   input.endFrame();
+}
+
+function checkEscape(s) {
+  if (s.health !== HEALTH.HEALTHY && s.health !== HEALTH.INJURED &&
+      s.health !== HEALTH.DOWNED) return;
+
+  // Through an open exit gate
+  const cx = Math.floor(s.x / 16);
+  const cy = Math.floor(s.y / 16);
+  for (const gate of world.map.gates) {
+    if (gate.open && gate.cells.some(c => c.cx === cx && c.cy === cy)) {
+      escape();
+      return;
+    }
+  }
+
+  // Into the hatch
+  const hatch = world.map.hatch;
+  if (hatch.open && Math.hypot(hatch.x - s.x, hatch.y - s.y) < 14) {
+    escape();
+  }
+}
+
+function escape() {
+  world.escaped = true;
+  world.events.push({ type: 'escaped' });
 }
 
 // --- Rendering ---
@@ -190,7 +263,20 @@ function render() {
 
   drawTerrorVignette(w, h);
   drawHud(ctx, world, w, h);
-  if (world.survivor.health === HEALTH.DEAD) drawDeathOverlay(w, h);
+  if (world.escaped) drawEscapeOverlay(w, h);
+  else if (world.survivor.health === HEALTH.DEAD) drawDeathOverlay(w, h);
+}
+
+function drawEscapeOverlay(w, h) {
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+  ctx.fillRect(0, 0, w, h);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#9bc995';
+  ctx.font = '700 52px system-ui, sans-serif';
+  ctx.fillText('ESCAPED', w / 2, h / 2 - 20);
+  ctx.fillStyle = '#e8e3d0';
+  ctx.font = '400 20px system-ui, sans-serif';
+  ctx.fillText('You live to be camped another day. Press R to play again.', w / 2, h / 2 + 28);
 }
 
 function drawDeathOverlay(w, h) {

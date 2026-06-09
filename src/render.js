@@ -89,6 +89,27 @@ function drawEntities(ctx, map) {
     ctx.stroke();
   }
 
+  // Hatch (visible only once open)
+  if (map.hatch && map.hatch.open) {
+    const hx = map.hatch.x;
+    const hy = map.hatch.y;
+    ctx.fillStyle = '#05050a';
+    ctx.beginPath();
+    ctx.ellipse(hx, hy, CELL * 0.7, CELL * 0.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#4a4a3a';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // Faint glow so it can be spotted
+    ctx.save();
+    ctx.globalAlpha = 0.12;
+    ctx.fillStyle = '#c9c98a';
+    ctx.beginPath();
+    ctx.arc(hx, hy, CELL * 1.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
   // Pallets
   for (const p of map.pallets) {
     if (p.state === 'broken') continue;
